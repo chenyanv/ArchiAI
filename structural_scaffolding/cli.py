@@ -4,7 +4,8 @@ import argparse
 import sys
 from pathlib import Path
 
-from .extractor import ProfileExtractor, TreeSitterDependencyError, profiles_to_json
+from .database import DEFAULT_DATABASE_URL, persist_profiles, resolve_database_url
+from .extractor import ProfileExtractor, TreeSitterDependencyError
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -18,15 +19,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Repository root to scan (defaults to current working directory).",
     )
     parser.add_argument(
-        "--output",
-        type=Path,
-        help="Optional output path for the generated JSON. Defaults to stdout when omitted.",
-    )
-    parser.add_argument(
         "--ignore",
         nargs="*",
         default=None,
         help="Optional list of directory names to ignore during traversal.",
+    )
+    parser.add_argument(
+        "--database-url",
+        type=str,
+        default=None,
+        help=(
+            "SQLAlchemy database URL. Defaults to environment variable "
+            "STRUCTURAL_SCAFFOLD_DB_URL or"
+            f" {DEFAULT_DATABASE_URL}."
+        ),
     )
     return parser.parse_args(argv)
 
@@ -44,13 +50,14 @@ def run(argv: list[str] | None = None) -> int:
         return 2
 
     profiles.sort(key=lambda profile: profile.id)
-    payload = profiles_to_json(profiles)
+    database_url = resolve_database_url(args.database_url)
+    stored = persist_profiles(
+        profiles,
+        root=args.root,
+        database_url=database_url,
+    )
 
-    if args.output:
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(payload, encoding="utf-8")
-    else:
-        print(payload)
+    print(f"Stored {stored} profiles into {database_url}")
 
     return 0
 
