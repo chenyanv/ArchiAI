@@ -37,7 +37,7 @@ def build_l1_messages(context: L1SummaryContext) -> List[dict[str, str]]:
             "content": (
                 "You are a senior software architect. Provide a concise Level 1 summary that explains "
                 "the role, responsibilities, and collaboration points of the target component. "
-                "Do not repeat the prompt, focus on purpose, major behaviours, and the interfaces it exposes."
+                "focus on purpose, major behaviours, and the interfaces it exposes."
             ),
         },
         {

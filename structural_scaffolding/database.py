@@ -12,7 +12,9 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sess
 from structural_scaffolding.models import Profile
 
 
-DEFAULT_DATABASE_URL = "postgresql+psycopg:///structural_scaffolding"
+# Default points to the Docker-exposed PostgreSQL port for local development.
+# Containers override this via STRUCTURAL_SCAFFOLD_DB_URL.
+DEFAULT_DATABASE_URL = "postgresql+psycopg://archai:archai@localhost:55432/structural_scaffolding"
 
 
 class Base(DeclarativeBase):
