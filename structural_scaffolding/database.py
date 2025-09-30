@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from functools import lru_cache
 from typing import Iterable, Optional
 
 from sqlalchemy import Integer, String, Text, create_engine
@@ -46,10 +47,17 @@ def resolve_database_url(database_url: str | None) -> str:
     return database_url or os.getenv("STRUCTURAL_SCAFFOLD_DB_URL") or DEFAULT_DATABASE_URL
 
 
-def _create_session(database_url: str) -> Session:
+@lru_cache(maxsize=None)
+def _session_factory_for(database_url: str) -> sessionmaker[Session]:
     engine = create_engine(database_url, future=True)
     Base.metadata.create_all(engine)
-    return sessionmaker(bind=engine, future=True)()
+    return sessionmaker(bind=engine, future=True)
+
+
+def create_session(database_url: str | None = None) -> Session:
+    url = resolve_database_url(database_url)
+    factory = _session_factory_for(url)
+    return factory()
 
 
 def persist_profiles(
@@ -64,8 +72,7 @@ def persist_profiles(
     without creating duplicates.
     """
 
-    url = resolve_database_url(database_url)
-    session = _create_session(url)
+    session = create_session(database_url)
 
     stored = 0
     try:
@@ -105,6 +112,7 @@ def persist_profiles(
 
 __all__ = [
     "DEFAULT_DATABASE_URL",
+    "create_session",
     "persist_profiles",
     "ProfileRecord",
     "resolve_database_url",
