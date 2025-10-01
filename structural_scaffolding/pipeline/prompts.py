@@ -31,18 +31,33 @@ def build_l1_messages(context: L1SummaryContext) -> List[dict[str, str]]:
 
     user_content = "\n\n".join(line for line in user_lines if line)
 
+    instruction = (
+        "Produce a workflow-oriented Level 1 summary that enables downstream workflow mapping. "
+        "Stay strictly factual—only rely on evidence in the supplied context. If something is not evident, "
+        "state 'Unknown'. Format the response in Markdown using this template:\n\n"
+        "Core Identity: <succinct description of what this component is>\n"
+        "Business Intent: <which higher-level process or objective this serves>\n"
+        "Data Flow:\n"
+        "  - Inputs: <main inputs consumed>\n"
+        "  - Outputs: <main artefacts or state produced>\n"
+        "Key Interactions and Effects:\n"
+        "  - Collaborators: <primary upstream callers, downstream consumers, or external services>\n"
+        "  - Side Effects: <observable external effects such as database writes, API calls, notifications>\n\n"
+        "Use clear, reader-friendly language. Highlight business context and data movement so an automation engine can place this node in a workflow."
+    )
+
     return [
         {
             "role": "system",
             "content": (
-                "You are a senior software architect. Provide a concise Level 1 summary that explains "
-                "the role, responsibilities, and collaboration points of the target component. "
-                "focus on purpose, major behaviours, and the interfaces it exposes."
+                "You are a workflow systems architect. Your job is to interpret code metadata and produce "
+                "workflow-aware summaries that emphasise business purpose, data flow, key collaborators, and side effects. "
+                "Do not speculate beyond the provided context."
             ),
         },
         {
             "role": "user",
-            "content": user_content,
+            "content": instruction + "\n\n=== Context ===\n" + user_content,
         },
     ]
 
