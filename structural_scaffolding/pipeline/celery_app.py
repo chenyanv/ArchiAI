@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from celery import Celery
 
-
+# TODO: Add level 2 summerization queue
 def _default_queue() -> str:
     return os.getenv("CELERY_DEFAULT_QUEUE", "l1_summary_queue")
 

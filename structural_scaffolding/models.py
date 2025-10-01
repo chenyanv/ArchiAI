@@ -7,6 +7,7 @@ from typing import Dict, List, Optional
 
 class SummaryLevel(str, Enum):
     NONE = "NONE"
+    LEVEL_1_IN_PROGRESS = "LEVEL_1_IN_PROGRESS"
     LEVEL_1 = "LEVEL_1"
     LEVEL_2_IN_PROGRESS = "LEVEL_2_IN_PROGRESS"
     LEVEL_2_COMPLETED = "LEVEL_2_COMPLETED"
