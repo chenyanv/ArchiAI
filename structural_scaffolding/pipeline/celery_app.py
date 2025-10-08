@@ -12,7 +12,10 @@ celery_app = Celery(
     "structural_scaffolding",
     broker=os.getenv("CELERY_BROKER_URL", "amqp://guest:guest@localhost:5672//"),
     backend=os.getenv("CELERY_RESULT_BACKEND", "rpc://"),
-    include=["structural_scaffolding.pipeline.tasks"],
+    include=[
+        "structural_scaffolding.pipeline.tasks",
+        "structural_scaffolding.pipeline.workflow_tasks",
+    ],
 )
 
 celery_app.conf.update(

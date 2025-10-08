@@ -63,6 +63,28 @@ class WorkflowEntryPointRecord(Base):
     )
 
 
+class WorkflowRecord(Base):
+    """SQLAlchemy representation of a synthesized workflow."""
+
+    __tablename__ = "workflows"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    entry_point_id: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
+    workflow_name: Mapped[Optional[str]] = mapped_column(String(255))
+    workflow: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
 def resolve_database_url(database_url: str | None) -> str:
     return database_url or os.getenv("STRUCTURAL_SCAFFOLD_DB_URL") or DEFAULT_DATABASE_URL
 
@@ -137,4 +159,5 @@ __all__ = [
     "ProfileRecord",
     "resolve_database_url",
     "WorkflowEntryPointRecord",
+    "WorkflowRecord",
 ]

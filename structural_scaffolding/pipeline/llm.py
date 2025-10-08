@@ -1,21 +1,14 @@
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 from enum import Enum
-from typing import Optional
+from typing import Optional, Sequence
 
 from openai import APITimeoutError, APIError, OpenAI, RateLimitError
 
 from .context import L1SummaryContext
 from .prompts import build_l1_messages
-
-_DEFAULT_OPENAI_MODEL = os.getenv("OPENAI_SUMMARY_MODEL", "gpt-4o-mini")
-_DEFAULT_OPENAI_TEMPERATURE = float(os.getenv("OPENAI_SUMMARY_TEMPERATURE", "0.2"))
-_DEFAULT_OPENAI_MAX_TOKENS = int(os.getenv("OPENAI_SUMMARY_MAX_TOKENS", "600"))
-
-_DEFAULT_GEMINI_MODEL = os.getenv("GEMINI_SUMMARY_MODEL", "gemini-2.5-flash")
-_DEFAULT_GEMINI_TEMPERATURE = float(os.getenv("GEMINI_SUMMARY_TEMPERATURE", "0.2"))
-_DEFAULT_GEMINI_MAX_TOKENS = int(os.getenv("GEMINI_SUMMARY_MAX_TOKENS", "1024"))
 
 
 class SummaryProvider(str, Enum):
@@ -39,44 +32,72 @@ class LLMPermanentError(LLMError):
     """Raised for errors that retries are unlikely to fix."""
 
 
+@dataclass(frozen=True)
+class ChatSettings:
+    model: str
+    temperature: float
+    max_tokens: int
+
+
+@dataclass(frozen=True)
+class ProviderSettings:
+    openai: ChatSettings
+    gemini: ChatSettings
+
+
 def request_l1_summary(
     context: L1SummaryContext,
     *,
     model: Optional[str] = None,
 ) -> str:
-    provider = _resolve_provider()
-    if provider is SummaryProvider.GEMINI:
-        return _request_gemini_summary(context, model=model)
-    return _request_openai_summary(context, model=model)
+    settings = _l1_settings(model_override=model)
+    provider = _resolve_provider("SUMMARY_PROVIDER")
+    messages = build_l1_messages(context)
+    return _execute_chat(messages, settings=settings, provider=provider)
 
 
-def _resolve_provider() -> SummaryProvider:
-    raw = os.getenv("SUMMARY_PROVIDER", SummaryProvider.OPENAI.value).strip().lower()
-    if raw in {"gemini", "google", "gemini-2.5", "gemini_flash"}:
-        return SummaryProvider.GEMINI
-    return SummaryProvider.OPENAI
-
-
-def _request_openai_summary(
-    context: L1SummaryContext,
+def request_workflow_completion(
+    prompt: str,
     *,
+    expect_json: bool = False,  # noqa: FBT002 - retained for backwards compatibility
     model: Optional[str] = None,
+    system_prompt: Optional[str] = None,
 ) -> str:
+    settings = _workflow_settings(model_override=model)
+    provider = _resolve_provider("WORKFLOW_PROVIDER", "SUMMARY_PROVIDER")
+
+    system_message = system_prompt if system_prompt is not None else _workflow_system_prompt()
+    messages: list[dict[str, str]] = []
+    if system_message:
+        messages.append({"role": "system", "content": system_message})
+    messages.append({"role": "user", "content": prompt})
+
+    return _execute_chat(messages, settings=settings, provider=provider)
+
+
+def _execute_chat(
+    messages: Sequence[dict[str, str]],
+    *,
+    settings: ProviderSettings,
+    provider: SummaryProvider,
+) -> str:
+    if provider is SummaryProvider.GEMINI:
+        return _call_gemini(messages, settings.gemini)
+    return _call_openai(messages, settings.openai)
+
+
+def _call_openai(messages: Sequence[dict[str, str]], settings: ChatSettings) -> str:
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
         raise LLMConfigurationError("OPENAI_API_KEY environment variable is not set")
 
     client = OpenAI(api_key=api_key)
-    messages = build_l1_messages(context)
-
-    target_model = model or _DEFAULT_OPENAI_MODEL
-
     try:
         response = client.chat.completions.create(
-            model=target_model,
-            messages=messages,
-            temperature=_DEFAULT_OPENAI_TEMPERATURE,
-            max_tokens=_DEFAULT_OPENAI_MAX_TOKENS,
+            model=settings.model,
+            messages=list(messages),
+            temperature=settings.temperature,
+            max_tokens=settings.max_tokens,
         )
     except (RateLimitError, APITimeoutError) as exc:
         raise LLMRetryableError("Transient OpenAI error") from exc
@@ -97,11 +118,7 @@ def _request_openai_summary(
     return message.strip()
 
 
-def _request_gemini_summary(
-    context: L1SummaryContext,
-    *,
-    model: Optional[str] = None,
-) -> str:
+def _call_gemini(messages: Sequence[dict[str, str]], settings: ChatSettings) -> str:
     api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
     if not api_key:
         raise LLMConfigurationError("GEMINI_API_KEY (or GOOGLE_API_KEY) environment variable is not set")
@@ -109,22 +126,19 @@ def _request_gemini_summary(
     try:
         import google.generativeai as genai
         from google.api_core import exceptions as google_exceptions
-    except ImportError as exc:  # pragma: no cover - requires optional dependency
+    except ImportError as exc:  # pragma: no cover - optional dependency
         raise LLMConfigurationError("google-generativeai package is not installed") from exc
 
     genai.configure(api_key=api_key)
-    target_model = model or _DEFAULT_GEMINI_MODEL
-
-    messages = build_l1_messages(context)
-    prompt = _format_messages_for_gemini(messages)
+    prompt = _format_for_gemini(messages)
 
     generation_config = {
-        "temperature": _DEFAULT_GEMINI_TEMPERATURE,
-        "max_output_tokens": _DEFAULT_GEMINI_MAX_TOKENS,
+        "temperature": settings.temperature,
+        "max_output_tokens": settings.max_tokens,
     }
 
     try:
-        model_ref = genai.GenerativeModel(target_model, generation_config=generation_config)
+        model_ref = genai.GenerativeModel(settings.model, generation_config=generation_config)
         response = model_ref.generate_content(prompt)
     except google_exceptions.ResourceExhausted as exc:
         raise LLMRetryableError("Gemini quota exhausted or rate limited") from exc
@@ -145,7 +159,65 @@ def _request_gemini_summary(
     raise LLMPermanentError("Gemini response did not include content")
 
 
-def _format_messages_for_gemini(messages: list[dict[str, str]]) -> str:
+def _l1_settings(*, model_override: Optional[str]) -> ProviderSettings:
+    openai_settings = ChatSettings(
+        model=model_override or os.getenv("OPENAI_SUMMARY_MODEL", "gpt-4o-mini"),
+        temperature=float(os.getenv("OPENAI_SUMMARY_TEMPERATURE", "0.2")),
+        max_tokens=int(os.getenv("OPENAI_SUMMARY_MAX_TOKENS", "600")),
+    )
+    gemini_settings = ChatSettings(
+        model=model_override or os.getenv("GEMINI_SUMMARY_MODEL", "gemini-2.5-flash"),
+        temperature=float(os.getenv("GEMINI_SUMMARY_TEMPERATURE", "0.2")),
+        max_tokens=int(os.getenv("GEMINI_SUMMARY_MAX_TOKENS", "1024")),
+    )
+    return ProviderSettings(openai=openai_settings, gemini=gemini_settings)
+
+
+def _workflow_settings(*, model_override: Optional[str]) -> ProviderSettings:
+    openai_settings = ChatSettings(
+        model=model_override
+        or os.getenv("OPENAI_WORKFLOW_MODEL")
+        or os.getenv("OPENAI_SUMMARY_MODEL", "gpt-4o-mini"),
+        temperature=float(
+            os.getenv("OPENAI_WORKFLOW_TEMPERATURE", os.getenv("OPENAI_SUMMARY_TEMPERATURE", "0.2"))
+        ),
+        max_tokens=int(os.getenv("OPENAI_WORKFLOW_MAX_TOKENS", "1200")),
+    )
+    gemini_settings = ChatSettings(
+        model=model_override
+        or os.getenv("GEMINI_WORKFLOW_MODEL")
+        or os.getenv("GEMINI_SUMMARY_MODEL", "gemini-2.5-flash"),
+        temperature=float(
+            os.getenv("GEMINI_WORKFLOW_TEMPERATURE", os.getenv("GEMINI_SUMMARY_TEMPERATURE", "0.2"))
+        ),
+        max_tokens=int(os.getenv("GEMINI_WORKFLOW_MAX_TOKENS", "2048")),
+    )
+    return ProviderSettings(openai=openai_settings, gemini=gemini_settings)
+
+
+def _workflow_system_prompt() -> Optional[str]:
+    return os.getenv(
+        "WORKFLOW_SYSTEM_PROMPT",
+        "You are a principal workflow architect. Craft precise, implementation-aware summaries.",
+    )
+
+
+def _resolve_provider(*env_keys: str) -> SummaryProvider:
+    for key in env_keys:
+        if not key:
+            continue
+        raw = os.getenv(key)
+        if not raw:
+            continue
+        normalised = raw.strip().lower()
+        if normalised in {"gemini", "google", "gemini-2.5", "gemini_flash"}:
+            return SummaryProvider.GEMINI
+        if normalised in {"openai", "gpt", "gpt-4o", "gpt4o"}:
+            return SummaryProvider.OPENAI
+    return SummaryProvider.OPENAI
+
+
+def _format_for_gemini(messages: Sequence[dict[str, str]]) -> str:
     sections = []
     for message in messages:
         role = message.get("role", "user")
@@ -210,4 +282,5 @@ __all__ = [
     "LLMRetryableError",
     "SummaryProvider",
     "request_l1_summary",
+    "request_workflow_completion",
 ]
