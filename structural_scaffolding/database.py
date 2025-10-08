@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from datetime import datetime
 from functools import lru_cache
 from typing import Iterable, Optional
 
-from sqlalchemy import Integer, String, Text, create_engine
+from sqlalchemy import DateTime, Integer, String, Text, create_engine, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
@@ -43,6 +44,23 @@ class ProfileRecord(Base):
     calls: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     children: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     data: Mapped[dict] = mapped_column(JSONB, nullable=False)
+
+
+class WorkflowEntryPointRecord(Base):
+    """SQLAlchemy representation of a detected workflow entry point."""
+
+    __tablename__ = "workflow_entry_points"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    profile_id: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
+    entry_point_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    confidence: Mapped[str] = mapped_column(String(50), nullable=False)
+    context: Mapped[dict | None] = mapped_column(JSONB)
+    created_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
 
 
 def resolve_database_url(database_url: str | None) -> str:
@@ -118,4 +136,5 @@ __all__ = [
     "persist_profiles",
     "ProfileRecord",
     "resolve_database_url",
+    "WorkflowEntryPointRecord",
 ]
