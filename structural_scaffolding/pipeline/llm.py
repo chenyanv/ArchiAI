@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from enum import Enum
 from typing import Optional
@@ -15,8 +16,10 @@ _DEFAULT_OPENAI_MAX_TOKENS = int(os.getenv("OPENAI_SUMMARY_MAX_TOKENS", "600"))
 
 _DEFAULT_GEMINI_MODEL = os.getenv("GEMINI_SUMMARY_MODEL", "gemini-2.5-flash")
 _DEFAULT_GEMINI_TEMPERATURE = float(os.getenv("GEMINI_SUMMARY_TEMPERATURE", "0.2"))
-_DEFAULT_GEMINI_MAX_TOKENS = int(os.getenv("GEMINI_SUMMARY_MAX_TOKENS", "1024"))
+_DEFAULT_GEMINI_MAX_TOKENS = int(os.getenv("GEMINI_SUMMARY_MAX_TOKENS", "1500"))
 
+
+logger = logging.getLogger(__name__)
 
 class SummaryProvider(str, Enum):
     OPENAI = "openai"
@@ -37,7 +40,6 @@ class LLMRetryableError(LLMError):
 
 class LLMPermanentError(LLMError):
     """Raised for errors that retries are unlikely to fix."""
-
 
 def request_l1_summary(
     context: L1SummaryContext,
@@ -135,21 +137,38 @@ def _request_gemini_summary(
     except Exception as exc:  # pragma: no cover - defensive fallback
         raise LLMRetryableError("Unexpected error calling Gemini") from exc
 
-    text = getattr(response, "text", None)
-    if not text:
-        candidates = getattr(response, "candidates", None) or []
-        for candidate in candidates:
-            parts = getattr(candidate, "content", None)
-            if parts and getattr(parts, "parts", None):
-                pieces = [getattr(part, "text", "") for part in parts.parts]
-                text = "".join(piece for piece in pieces if piece)
-                if text:
-                    break
+    text, blocked_categories, block_reason, finish_reasons = _extract_gemini_text(response)
+    if text:
+        return text
 
-    if not text:
-        raise LLMPermanentError("Gemini response did not include content")
+    diagnostic: dict[str, object] = {}
+    if finish_reasons:
+        diagnostic["finish_reasons"] = sorted(finish_reasons)
+    if block_reason:
+        diagnostic["block_reason"] = block_reason
+    if blocked_categories:
+        diagnostic["blocked_categories"] = sorted(blocked_categories)
 
-    return text.strip()
+    if diagnostic:
+        logger.warning("Gemini response returned no usable text. Diagnostics: %s", diagnostic)
+    else:
+        logger.warning("Gemini response returned no usable text and provided no diagnostics: %r", response)
+
+    if blocked_categories:
+        categories = ", ".join(sorted(blocked_categories))
+        suffix = f" ({categories})" if categories else ""
+        detail = f"Gemini response blocked by safety filters{suffix}"
+        if block_reason:
+            detail += f"; block_reason={block_reason}"
+        raise LLMPermanentError(detail)
+
+    if block_reason:
+        raise LLMPermanentError(f"Gemini response blocked (reason={block_reason})")
+
+    message = "Gemini response did not include content"
+    if diagnostic:
+        message += f" (diagnostics={diagnostic})"
+    raise LLMPermanentError(message)
 
 
 def _format_messages_for_gemini(messages: list[dict[str, str]]) -> str:
@@ -161,6 +180,67 @@ def _format_messages_for_gemini(messages: list[dict[str, str]]) -> str:
             continue
         sections.append(f"[{role.upper()}]\n{content}")
     return "\n\n".join(sections)
+
+
+def _extract_gemini_text(response) -> tuple[str | None, set[str] | None, str | None, set[str] | None]:
+    try:
+        text = getattr(response, "text", None)
+    except ValueError:
+        text = None
+
+    if isinstance(text, str) and text.strip():
+        return text.strip(), None, None, None
+
+    candidates = getattr(response, "candidates", None) or []
+    blocked_categories: set[str] = set()
+    finish_reasons: set[str] = set()
+    block_reason = None
+
+    prompt_feedback = getattr(response, "prompt_feedback", None)
+    if prompt_feedback:
+        block_reason = getattr(prompt_feedback, "block_reason", None)
+        for rating in getattr(prompt_feedback, "safety_ratings", None) or []:
+            if getattr(rating, "blocked", False):
+                category = getattr(rating, "category", None)
+                blocked_categories.add(str(category) if category else "unspecified")
+
+    for candidate in candidates:
+        finish_reason = getattr(candidate, "finish_reason", None)
+        if finish_reason:
+            finish_reasons.add(str(finish_reason))
+
+        safety_ratings = getattr(candidate, "safety_ratings", None) or []
+        blocked = False
+        for rating in safety_ratings:
+            if getattr(rating, "blocked", False):
+                blocked = True
+                category = getattr(rating, "category", None)
+                blocked_categories.add(str(category) if category else "unspecified")
+        if blocked:
+            continue
+
+        fragments: list[str] = []
+
+        content = getattr(candidate, "content", None)
+        parts = getattr(content, "parts", None)
+        if parts:
+            for part in parts:
+                piece = getattr(part, "text", None)
+                if piece:
+                    fragments.append(piece)
+
+        alt_text = getattr(candidate, "output_text", None)
+        if isinstance(alt_text, str) and alt_text:
+            fragments.append(alt_text)
+
+        candidate_text = "".join(fragments).strip()
+        if candidate_text:
+            return candidate_text, None, None, finish_reasons
+
+    if blocked_categories:
+        return None, blocked_categories, block_reason, finish_reasons
+
+    return None, None, block_reason, finish_reasons
 
 
 __all__ = [

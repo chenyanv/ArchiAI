@@ -45,7 +45,11 @@ def build_l1_context(session: Session, profile: ProfileRecord) -> L1SummaryConte
     outbound_calls = _unique_sequence(profile.calls or [])
     imports = _extract_imports(profile.source_code)
     source_code = _truncate_source(profile.source_code)
-    related_profiles = _collect_related_profiles(session, profile, depth=1)
+    # NOTE: We no longer pull related profile snippets for L1 summaries to keep the
+    # prompt compact. The previous recursive lookup remains documented below for
+    # potential future use.
+    related_profiles: List[RelatedProfileSnippet] = []
+    # related_profiles = _collect_related_profiles(session, profile, depth=1)
 
     display_name = _derive_display_name(profile)
 

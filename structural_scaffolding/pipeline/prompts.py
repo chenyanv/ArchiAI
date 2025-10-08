@@ -12,7 +12,7 @@ def build_l1_messages(context: L1SummaryContext) -> List[dict[str, str]]:
     members = _format_section("Public API", context.public_members)
     calls = _format_section("Key outbound calls", context.outbound_calls)
     imports = _format_section("Imports", context.imports)
-    related = _format_related_profiles(context.related_profiles)
+    # NOTE: Related profile context is intentionally omitted to keep the prompt lean.
 
     docstring = context.docstring.strip() if context.docstring else "(none)"
 
@@ -25,34 +25,28 @@ def build_l1_messages(context: L1SummaryContext) -> List[dict[str, str]]:
         members,
         calls,
         imports,
-        related,
         "Source code:\n```python\n" + context.source_code + "\n```",
     ]
 
     user_content = "\n\n".join(line for line in user_lines if line)
 
     instruction = (
-        "Produce a workflow-oriented Level 1 summary that enables downstream workflow mapping. "
-        "Stay strictly factual—only rely on evidence in the supplied context. If something is not evident, "
-        "state 'Unknown'. Format the response in Markdown using this template:\n\n"
-        "Core Identity: <succinct description of what this component is>\n"
-        "Business Intent: <which higher-level process or objective this serves>\n"
-        "Data Flow:\n"
-        "  - Inputs: <main inputs consumed>\n"
-        "  - Outputs: <main artefacts or state produced>\n"
-        "Key Interactions and Effects:\n"
-        "  - Collaborators: <primary upstream callers, downstream consumers, or external services>\n"
-        "  - Side Effects: <observable external effects such as database writes, API calls, notifications>\n\n"
-        "Use clear, reader-friendly language. Highlight business context and data movement so an automation engine can place this node in a workflow."
+        "Role: You are a principal software architect who understands isolated components and how they participate in larger workflows.\n"
+        "Task: Analyse the provided component and respond strictly as JSON with the following structure:\n"
+        '{"summary":{"core_identity":"","business_intent":"","data_flow":{"inputs":[],"outputs":[]},"key_interactions":{"collaborators":[],"side_effects":[]}},"workflow_hints":{"role":"","potential_workflow_name":"","triggers":[],"outputs_to":[]}}'
+        "\nPopulate each field with grounded information taken from the context. "
+        "workflow_hints.role must be one of \"ENTRY_POINT\", \"KEY_STEP\", \"TERMINATOR\", or \"UTILS\". "
+        "Use descriptive sentences for string fields. When evidence is missing, set the string value to \"Unknown\" and leave arrays empty. "
+        "Only add triggers or outputs_to entries when the evidence supports them; otherwise leave the arrays empty (especially for non-KEY_STEP roles). "
+        "Do not add extra keys, prose, Markdown, or commentary."
     )
 
     return [
         {
             "role": "system",
             "content": (
-                "You are a workflow systems architect. Your job is to interpret code metadata and produce "
-                "workflow-aware summaries that emphasise business purpose, data flow, key collaborators, and side effects. "
-                "Do not speculate beyond the provided context."
+                "You are a principal workflow systems architect. Interpret the supplied metadata and source code, "
+                "ground every statement in evidence, prefer 'Unknown' to speculation, and obey the response format exactly."
             ),
         },
         {
@@ -75,6 +69,9 @@ def _format_section(title: str, items: List[str]) -> str:
 
 
 def _format_related_profiles(related_profiles: List[RelatedProfileSnippet]) -> str:
+    # Historical helper retained as documentation of the earlier approach where we
+    # threaded related profiles (depth 1) into the prompt. Calling code now skips
+    # this to avoid recursively expanding context.
     if not related_profiles:
         return "Related profiles (depth 1): (none)"
 

@@ -19,6 +19,7 @@ celery_app.conf.update(
     task_default_queue=_default_queue(),
     task_acks_late=True,
     worker_prefetch_multiplier=int(os.getenv("CELERY_PREFETCH_MULTIPLIER", "1")),
+    worker_concurrency=int(os.getenv("CELERY_WORKER_CONCURRENCY", "4")),
     task_serializer="json",
     result_serializer="json",
     accept_content=["json"],
