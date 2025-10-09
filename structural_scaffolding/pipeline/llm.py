@@ -8,8 +8,8 @@ from typing import Any, Dict, Optional, Sequence
 
 from openai import APITimeoutError, APIError, OpenAI, RateLimitError
 
-from .context import L1SummaryContext
-from .prompts import build_l1_messages
+from .context import DirectorySummaryContext, L1SummaryContext
+from .prompts import build_directory_messages, build_l1_messages
 
 
 class SummaryProvider(str, Enum):
@@ -63,6 +63,25 @@ def request_l1_summary(
     if not isinstance(data, dict):
         raise LLMPermanentError("L1 summary response must be a JSON object")
     return _normalise_l1_payload(data)
+
+
+def request_directory_summary(
+    context: DirectorySummaryContext,
+    *,
+    model: Optional[str] = None,
+) -> Dict[str, Any]:
+    settings = _l1_settings(model_override=model)
+    provider = _resolve_provider("DIRECTORY_PROVIDER", "SUMMARY_PROVIDER")
+    messages = build_directory_messages(context)
+    raw_response = _execute_chat(messages, settings=settings, provider=provider)
+    payload = _extract_json_object(raw_response)
+    try:
+        data = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        raise LLMPermanentError(f"Directory summary provider returned non-JSON content: {payload}") from exc
+    if not isinstance(data, dict):
+        raise LLMPermanentError("Directory summary response must be a JSON object")
+    return _normalise_directory_payload(data, directory=context.directory_path)
 
 
 def request_workflow_completion(
@@ -333,6 +352,49 @@ def _normalise_l1_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _normalise_directory_payload(payload: Dict[str, Any], *, directory: str) -> Dict[str, Any]:
+    overview = payload.get("overview")
+    if not isinstance(overview, str) or not overview.strip():
+        overview = "Overview unavailable."
+
+    key_capabilities = payload.get("key_capabilities")
+    if not isinstance(key_capabilities, list):
+        key_capabilities = []
+    else:
+        key_capabilities = [str(item).strip() for item in key_capabilities if str(item).strip()]
+
+    notable_entry_points = payload.get("notable_entry_points")
+    if not isinstance(notable_entry_points, list):
+        notable_entry_points = []
+    else:
+        notable_entry_points = [str(item).strip() for item in notable_entry_points if str(item).strip()]
+
+    dependencies = payload.get("dependencies")
+    if not isinstance(dependencies, list):
+        dependencies = []
+    else:
+        dependencies = [str(item).strip() for item in dependencies if str(item).strip()]
+
+    follow_up = payload.get("follow_up")
+    if not isinstance(follow_up, list):
+        follow_up = []
+    else:
+        follow_up = [str(item).strip() for item in follow_up if str(item).strip()]
+
+    directory_name = payload.get("directory")
+    if not isinstance(directory_name, str) or not directory_name.strip():
+        directory_name = directory
+
+    return {
+        "directory": directory_name,
+        "overview": overview.strip(),
+        "key_capabilities": key_capabilities,
+        "notable_entry_points": notable_entry_points,
+        "dependencies": dependencies,
+        "follow_up": follow_up,
+    }
+
+
 def _normalise_confidence_label(value: Any) -> str:
     label = ""
     if isinstance(value, str):
@@ -351,6 +413,7 @@ __all__ = [
     "LLMPermanentError",
     "LLMRetryableError",
     "SummaryProvider",
+    "request_directory_summary",
     "request_l1_summary",
     "request_workflow_completion",
 ]

@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import ast
 from dataclasses import dataclass
-from typing import Iterable, List
+from pathlib import Path
+from typing import Iterable, List, Optional
 
 from sqlalchemy.orm import Session
 
@@ -47,6 +48,21 @@ class EntryPointCandidateSnippet:
     call_count: int
     outbound_calls: List[str]
     is_public: bool
+
+
+@dataclass(slots=True)
+class DirectoryFileSummary:
+    file_path: str
+    summary: dict
+    workflow_hints: dict
+    entry_point: Optional[dict]
+
+
+@dataclass(slots=True)
+class DirectorySummaryContext:
+    root_path: str
+    directory_path: str
+    files: List[DirectoryFileSummary]
 
 
 def build_l1_context(session: Session, profile: ProfileRecord) -> L1SummaryContext:
@@ -204,6 +220,65 @@ def _collect_entry_point_candidates(session: Session, profile: ProfileRecord) ->
     return snippets
 
 
+def build_directory_context(
+    session: Session,
+    directory_path: str,
+    *,
+    root_path: Optional[str] = None,
+) -> DirectorySummaryContext:
+    target_directory = _normalise_directory_path(directory_path)
+
+    stmt = session.query(ProfileRecord).filter(ProfileRecord.kind == "file")
+    if root_path is not None:
+        stmt = stmt.filter(ProfileRecord.root_path == root_path)
+
+    files: List[DirectoryFileSummary] = []
+    resolved_root: Optional[str] = root_path
+
+    for record in stmt:
+        file_path = (record.file_path or "").replace("\\", "/")
+        if not file_path:
+            continue
+        if not _file_in_directory(file_path, target_directory):
+            continue
+
+        summaries = record.summaries if isinstance(record.summaries, dict) else {}
+        level_1 = summaries.get("level_1")
+        if not isinstance(level_1, dict):
+            continue
+
+        summary_section = level_1.get("summary")
+        if not isinstance(summary_section, dict):
+            summary_section = {}
+        workflow_hints = level_1.get("workflow_hints")
+        if not isinstance(workflow_hints, dict):
+            workflow_hints = {}
+        entry_point = level_1.get("entry_point")
+        if not isinstance(entry_point, dict):
+            entry_point = None
+
+        files.append(
+            DirectoryFileSummary(
+                file_path=file_path,
+                summary=summary_section,
+                workflow_hints=workflow_hints,
+                entry_point=entry_point,
+            )
+        )
+
+        if resolved_root is None:
+            resolved_root = record.root_path
+
+    if not files:
+        raise ValueError(f"No file-level summaries found for directory '{directory_path}'")
+
+    return DirectorySummaryContext(
+        root_path=resolved_root or "",
+        directory_path=target_directory,
+        files=files,
+    )
+
+
 def _extract_imports(source_code: str) -> List[str]:
     if not source_code:
         return []
@@ -241,9 +316,30 @@ def _unique_sequence(items: Iterable[str]) -> List[str]:
     return list(seen)
 
 
+def _normalise_directory_path(directory_path: str) -> str:
+    if directory_path is None:
+        return "."
+    text = directory_path.strip()
+    if not text or text in {".", "./"}:
+        return "."
+    normalised = text.strip("/").replace("\\", "/")
+    return normalised or "."
+
+
+def _file_in_directory(file_path: str, directory_path: str) -> bool:
+    if directory_path == ".":
+        return True
+    if file_path == directory_path:
+        return True
+    return file_path.startswith(f"{directory_path}/")
+
+
 __all__ = [
+    "DirectoryFileSummary",
+    "DirectorySummaryContext",
     "EntryPointCandidateSnippet",
     "L1SummaryContext",
     "RelatedProfileSnippet",
+    "build_directory_context",
     "build_l1_context",
 ]

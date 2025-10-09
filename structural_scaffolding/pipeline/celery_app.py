@@ -15,6 +15,7 @@ celery_app = Celery(
     include=[
         "structural_scaffolding.pipeline.tasks",
         "structural_scaffolding.pipeline.workflow_tasks",
+        "structural_scaffolding.pipeline.directory_tasks",
     ],
 )
 

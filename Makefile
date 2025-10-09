@@ -4,6 +4,7 @@ WAIT_INTERVAL ?= 5
 SUMMARY_LIMIT ?=
 SUMMARY_FLAGS ?=
 AST_FLAGS ?=
+DIRECTORY_FLAGS ?=
 SYNTH_LIMIT ?=
 SYNTH_FLAGS ?=
 PROFILE ?=
@@ -16,9 +17,9 @@ AST_ROOT ?= $(WORKDIR)/ragflow-main
 RUN_WORKER_CMD = $(COMPOSE) exec -T worker bash -lc
 RUN_POSTGRES_CMD = $(COMPOSE) exec -T postgres bash -lc
 
-.PHONY: all summaries wait-summaries synthesize verify up down status reset ast
+.PHONY: all summaries wait-summaries directories synthesize verify up down status reset ast
 
-all: summaries wait-summaries synthesize verify
+all: summaries wait-summaries directories synthesize verify
 	@echo "🎉 Pipeline finished successfully!"
 
 up:
@@ -65,7 +66,12 @@ while true; do \
   fi; \
   echo "   $$remaining profiles still pending..."; \
   sleep "$$WAIT_INTERVAL"; \
-done'
+	done'
+
+directories:
+	@echo "--> Generating directory-level summaries..."
+	@$(RUN_WORKER_CMD) 'set -euo pipefail; cd $(WORKDIR); PYTHONPATH=$(WORKDIR) python scripts/run_directory_summaries.py $(DIRECTORY_FLAGS)'
+	@echo "✅ Directory summaries complete."
 
 synthesize:
 	@echo "--> Synthesizing workflows..."
