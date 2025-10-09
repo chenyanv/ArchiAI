@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional, Sequence
+from typing import Any, Dict, Optional, Sequence
 
 from openai import APITimeoutError, APIError, OpenAI, RateLimitError
 
@@ -49,11 +50,19 @@ def request_l1_summary(
     context: L1SummaryContext,
     *,
     model: Optional[str] = None,
-) -> str:
+) -> Dict[str, Any]:
     settings = _l1_settings(model_override=model)
     provider = _resolve_provider("SUMMARY_PROVIDER")
     messages = build_l1_messages(context)
-    return _execute_chat(messages, settings=settings, provider=provider)
+    raw_response = _execute_chat(messages, settings=settings, provider=provider)
+    payload = _extract_json_object(raw_response)
+    try:
+        data = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        raise LLMPermanentError(f"L1 summary provider returned non-JSON content: {payload}") from exc
+    if not isinstance(data, dict):
+        raise LLMPermanentError("L1 summary response must be a JSON object")
+    return _normalise_l1_payload(data)
 
 
 def request_workflow_completion(
@@ -273,6 +282,67 @@ def _extract_gemini_text(response) -> tuple[str | None, set[str] | None]:
         return None, blocked_categories
 
     return None, None
+
+
+def _extract_json_object(raw_text: str) -> str:
+    text = raw_text.strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if lines:
+            lines = lines[1:]
+        if lines and lines[-1].startswith("```"):
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        return text[start : end + 1]
+    return text
+
+
+def _normalise_l1_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    summary = payload.get("summary")
+    if not isinstance(summary, dict):
+        summary = {}
+
+    workflow_hints = payload.get("workflow_hints")
+    if not isinstance(workflow_hints, dict):
+        workflow_hints = {}
+
+    entry_point_raw = payload.get("entry_point")
+    entry_point: Dict[str, Any] | None
+    if isinstance(entry_point_raw, dict):
+        profile_id = str(entry_point_raw.get("profile_id") or "").strip()
+        if profile_id:
+            entry_point = {
+                "profile_id": profile_id,
+                "display_name": str(entry_point_raw.get("display_name") or "").strip() or profile_id,
+                "confidence": _normalise_confidence_label(entry_point_raw.get("confidence")),
+                "reasons": str(entry_point_raw.get("reasons") or "").strip(),
+            }
+        else:
+            entry_point = None
+    else:
+        entry_point = None
+
+    return {
+        "summary": summary,
+        "workflow_hints": workflow_hints,
+        "entry_point": entry_point,
+    }
+
+
+def _normalise_confidence_label(value: Any) -> str:
+    label = ""
+    if isinstance(value, str):
+        label = value.strip().upper()
+    elif value is not None:
+        label = str(value).strip().upper()
+
+    if label in {"HIGH", "MEDIUM", "LOW"}:
+        return label
+    return "MEDIUM"
 
 
 __all__ = [

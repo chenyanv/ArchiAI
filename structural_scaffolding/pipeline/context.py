@@ -25,6 +25,7 @@ class L1SummaryContext:
     outbound_calls: List[str]
     imports: List[str]
     related_profiles: List["RelatedProfileSnippet"]
+    entry_point_candidates: List["EntryPointCandidateSnippet"]
 
 
 @dataclass(slots=True)
@@ -35,6 +36,17 @@ class RelatedProfileSnippet:
     file_path: str
     docstring: str | None
     source_code: str
+
+
+@dataclass(slots=True)
+class EntryPointCandidateSnippet:
+    profile_id: str
+    kind: str
+    name: str
+    docstring: str | None
+    call_count: int
+    outbound_calls: List[str]
+    is_public: bool
 
 
 def build_l1_context(session: Session, profile: ProfileRecord) -> L1SummaryContext:
@@ -52,6 +64,7 @@ def build_l1_context(session: Session, profile: ProfileRecord) -> L1SummaryConte
     # related_profiles = _collect_related_profiles(session, profile, depth=1)
 
     display_name = _derive_display_name(profile)
+    entry_point_candidates = _collect_entry_point_candidates(session, profile)
 
     return L1SummaryContext(
         profile_id=profile.id,
@@ -64,6 +77,7 @@ def build_l1_context(session: Session, profile: ProfileRecord) -> L1SummaryConte
         outbound_calls=outbound_calls,
         imports=imports,
         related_profiles=related_profiles,
+        entry_point_candidates=entry_point_candidates,
     )
 
 
@@ -135,6 +149,61 @@ def _collect_related_profiles(
     return snippets
 
 
+def _collect_entry_point_candidates(session: Session, profile: ProfileRecord) -> List[EntryPointCandidateSnippet]:
+    child_ids: Iterable[str] = profile.children or []
+    if not child_ids:
+        return []
+
+    exclusion_set = {
+        "__init__",
+        "__call__",
+        "__repr__",
+        "__str__",
+        "__iter__",
+        "__next__",
+        "__enter__",
+        "__exit__",
+        "__getattr__",
+        "__setattr__",
+        "__del__",
+        "__delitem__",
+        "__getattribute__",
+        "to_dict",
+        "from_dict",
+        "as_dict",
+        "dict",
+        "serialize",
+        "deserialize",
+    }
+
+    snippets: List[EntryPointCandidateSnippet] = []
+    for child in load_profiles_by_ids(session, child_ids):
+        if child.kind not in {"function", "method"}:
+            continue
+
+        name = child.function_name or child.class_name or child.id
+        normalised_name = name.lower() if isinstance(name, str) else ""
+        base_name = normalised_name.rsplit(".", 1)[-1]
+        if base_name in exclusion_set:
+            continue
+
+        doc = child.docstring
+        calls = _unique_sequence(child.calls or [])
+        snippets.append(
+            EntryPointCandidateSnippet(
+                profile_id=child.id,
+                kind=child.kind,
+                name=name,
+                docstring=doc,
+                call_count=len(calls),
+                outbound_calls=calls[:8],
+                is_public=bool(name and not name.startswith("_")),
+            )
+        )
+
+    return snippets
+
+
 def _extract_imports(source_code: str) -> List[str]:
     if not source_code:
         return []
@@ -172,4 +241,9 @@ def _unique_sequence(items: Iterable[str]) -> List[str]:
     return list(seen)
 
 
-__all__ = ["L1SummaryContext", "RelatedProfileSnippet", "build_l1_context"]
+__all__ = [
+    "EntryPointCandidateSnippet",
+    "L1SummaryContext",
+    "RelatedProfileSnippet",
+    "build_l1_context",
+]

@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from celery.utils.log import get_task_logger
 from sqlalchemy.exc import SQLAlchemyError
 
-from structural_scaffolding.database import ProfileRecord, create_session
+from structural_scaffolding.database import (
+    ProfileRecord,
+    WorkflowEntryPointRecord,
+    create_session,
+)
 from structural_scaffolding.models import SummaryLevel
 
 from .celery_app import celery_app
@@ -41,8 +45,8 @@ def generate_l1_summary(self, profile_id: str, *, database_url: str | None = Non
             return {"profile_id": profile_id, "status": "missing"}
 
         context = build_l1_context(session, record)
-        summary_text = request_l1_summary(context)
-        _persist_summary(session, record, summary_text)
+        summary_payload = request_l1_summary(context)
+        _persist_summary(session, record, summary_payload)
 
         logger.info("Stored L1 summary", extra={"profile_id": profile_id})
         return {"profile_id": profile_id, "status": "completed"}
@@ -65,9 +69,9 @@ def generate_l1_summary(self, profile_id: str, *, database_url: str | None = Non
         session.close()
 
 
-def _persist_summary(session, record: ProfileRecord, summary_text: str) -> None:
+def _persist_summary(session, record: ProfileRecord, summary_payload: Dict[str, Any]) -> None:
     summaries = dict(record.summaries or {})
-    summaries["level_1"] = summary_text
+    summaries["level_1"] = summary_payload
 
     record.summaries = summaries
     record.summary_level = SummaryLevel.LEVEL_1.value
@@ -75,10 +79,103 @@ def _persist_summary(session, record: ProfileRecord, summary_text: str) -> None:
     payload = dict(record.data or {})
     payload["summaries"] = summaries
     payload["summary_level"] = SummaryLevel.LEVEL_1.value
+    entry_point_payload = summary_payload.get("entry_point")
+    if entry_point_payload is not None:
+        payload["entry_point"] = entry_point_payload
+    else:
+        payload.pop("entry_point", None)
     record.data = payload
+
+    _persist_entry_point(session, record, entry_point_payload)
 
     session.add(record)
     session.commit()
+
+
+def _persist_entry_point(
+    session,
+    component: ProfileRecord,
+    entry_payload: Dict[str, Any] | None,
+) -> None:
+    candidate_ids: List[str] = []
+    for value in component.children or []:
+        if isinstance(value, str):
+            candidate_ids.append(value)
+    candidate_ids.append(component.id)
+
+    existing_records: List[WorkflowEntryPointRecord] = []
+    if candidate_ids:
+        existing_records = (
+            session.query(WorkflowEntryPointRecord)
+            .filter(WorkflowEntryPointRecord.profile_id.in_(candidate_ids))
+            .all()
+        )
+
+    if not entry_payload or not isinstance(entry_payload, dict):
+        for record in existing_records:
+            session.delete(record)
+        return
+
+    profile_id = entry_payload.get("profile_id")
+    if not isinstance(profile_id, str) or not profile_id.strip():
+        for record in existing_records:
+            session.delete(record)
+        return
+
+    profile_id = profile_id.strip()
+    entry_record = next((item for item in existing_records if item.profile_id == profile_id), None)
+
+    for record in existing_records:
+        if record.profile_id != profile_id:
+            session.delete(record)
+
+    confidence_label = _normalise_entry_point_confidence(entry_payload.get("confidence"))
+    display_name = entry_payload.get("display_name") or profile_id
+    if not isinstance(display_name, str):
+        display_name = str(display_name)
+
+    display_name = display_name.strip()
+    confidence_label = _adjust_entry_point_confidence(display_name, confidence_label)
+
+    context_payload = {
+        "source_component": component.id,
+        "reasons": entry_payload.get("reasons"),
+    }
+
+    if entry_record is None:
+        entry_record = WorkflowEntryPointRecord(
+            profile_id=profile_id,
+            entry_point_type="L1_SUMMARY",
+            name=display_name.strip() or profile_id,
+            confidence=confidence_label,
+            context=context_payload,
+        )
+    else:
+        entry_record.entry_point_type = "L1_SUMMARY"
+        entry_record.name = display_name.strip() or profile_id
+        entry_record.confidence = confidence_label
+        entry_record.context = context_payload
+
+    session.add(entry_record)
+
+
+def _normalise_entry_point_confidence(value: Any) -> str:
+    if isinstance(value, str):
+        label = value.strip().upper()
+    elif value is None:
+        label = ""
+    else:
+        label = str(value).strip().upper()
+
+    if label in {"HIGH", "MEDIUM", "LOW"}:
+        return label
+    return "MEDIUM"
+
+
+def _adjust_entry_point_confidence(display_name: str, confidence: str) -> str:
+    if display_name == "__init__":
+        return "LOW"
+    return confidence
 
 
 __all__ = ["generate_l1_summary"]

@@ -29,6 +29,7 @@ services:
       CELERY_RESULT_BACKEND: rpc://
       STRUCTURAL_SCAFFOLD_DB_URL: postgresql+psycopg://archai:archai@postgres:5432/structural_scaffolding
       CELERY_DEFAULT_QUEUE: l1_summary_queue
+      CELERY_WORKER_CONCURRENCY: 8
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       SUMMARY_PROVIDER: ${SUMMARY_PROVIDER:-openai}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
