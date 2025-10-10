@@ -100,6 +100,10 @@ def request_workflow_completion(
         messages.append({"role": "system", "content": system_message})
     messages.append({"role": "user", "content": prompt})
 
+    payload_preview = json.dumps(messages, ensure_ascii=False, indent=2)
+    print("=== request_workflow_completion payload ===")
+    print(payload_preview)
+
     return _execute_chat(messages, settings=settings, provider=provider)
 
 
@@ -120,12 +124,30 @@ def _call_openai(messages: Sequence[dict[str, str]], settings: ChatSettings) -> 
         raise LLMConfigurationError("OPENAI_API_KEY environment variable is not set")
 
     client = OpenAI(api_key=api_key)
+    params: dict[str, Any] = {
+        "model": settings.model,
+        "messages": list(messages),
+    }
+    temperature = settings.temperature
+    if temperature is not None:
+        if settings.model.startswith("gpt-5"):
+            if temperature not in (None, 1, 1.0):
+                # GPT-5 currently only permits the default temperature.
+                pass
+            else:
+                params["temperature"] = 1
+        else:
+            params["temperature"] = temperature
+    max_tokens = settings.max_tokens
+    if max_tokens and max_tokens > 0:
+        if settings.model.startswith("gpt-5"):
+            params["max_completion_tokens"] = max_tokens
+        else:
+            params["max_tokens"] = max_tokens
+
     try:
         response = client.chat.completions.create(
-            model=settings.model,
-            messages=list(messages),
-            temperature=settings.temperature,
-            max_tokens=settings.max_tokens,
+            **params,
         )
     except (RateLimitError, APITimeoutError) as exc:
         raise LLMRetryableError("Transient OpenAI error") from exc
@@ -136,14 +158,33 @@ def _call_openai(messages: Sequence[dict[str, str]], settings: ChatSettings) -> 
     except Exception as exc:  # pragma: no cover - defensive guard for SDK changes
         raise LLMRetryableError("Unexpected error calling OpenAI") from exc
 
-    message = None
+    message_text: str | None = None
     if response.choices:
-        message = response.choices[0].message.content if response.choices[0].message else None
+        choice = response.choices[0]
+        message_obj = getattr(choice, "message", None)
+        if message_obj is not None:
+            content = getattr(message_obj, "content", None)
+            if isinstance(content, str):
+                message_text = content.strip()
+            elif isinstance(content, list):
+                fragments: list[str] = []
+                for part in content:
+                    if isinstance(part, dict):
+                        text_piece = part.get("text")
+                        if isinstance(text_piece, str):
+                            fragments.append(text_piece)
+                    elif isinstance(part, str):
+                        fragments.append(part)
+                message_text = " ".join(fragment.strip() for fragment in fragments if fragment and fragment.strip())
+        if not message_text:
+            alt_text = getattr(choice, "text", None)
+            if isinstance(alt_text, str) and alt_text.strip():
+                message_text = alt_text.strip()
 
-    if not message:
+    if not message_text:
         raise LLMPermanentError("OpenAI response did not include content")
 
-    return message.strip()
+    return message_text.strip()
 
 
 def _call_gemini(messages: Sequence[dict[str, str]], settings: ChatSettings) -> str:

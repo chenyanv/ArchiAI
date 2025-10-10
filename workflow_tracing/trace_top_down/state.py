@@ -22,7 +22,7 @@ class TopDownAgentConfig:
     summary_path: Path = Path("results/orchestration.json")
     output_path: Path = Path("results/trace_top_down.md")
     json_path: Path = Path("results/trace_top_down.json")
-    max_directories: int = 8
+    max_directories: int = 0
     profiles_per_directory: int = 6
     component_limit: int = 6
     enable_planner_llm: bool = True

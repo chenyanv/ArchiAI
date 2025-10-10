@@ -47,8 +47,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--max-directories",
         type=int,
-        default=8,
-        help="Maximum number of directories to include in the initial context.",
+        default=0,
+        help="Maximum number of directories to include in the initial context (0 = no limit).",
     )
     parser.add_argument(
         "--profiles-per-directory",
