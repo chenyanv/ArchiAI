@@ -10,6 +10,7 @@ SYNTH_FLAGS ?=
 PROFILE ?=
 PRINT_JSON ?= 0
 DEBUG ?= 0
+ORCHESTRATION_FLAGS ?=
 BOOL_TRUE := 1 true TRUE yes YES on ON
 
 AST_ROOT ?= $(WORKDIR)/ragflow-main
@@ -17,7 +18,7 @@ AST_ROOT ?= $(WORKDIR)/ragflow-main
 RUN_WORKER_CMD = $(COMPOSE) exec -T worker bash -lc
 RUN_POSTGRES_CMD = $(COMPOSE) exec -T postgres bash -lc
 
-.PHONY: all summaries wait-summaries directories synthesize verify up down status reset ast
+.PHONY: all summaries wait-summaries directories synthesize verify up down status reset ast orchestration-agent
 
 all: summaries wait-summaries directories synthesize verify
 	@echo "🎉 Pipeline finished successfully!"
@@ -86,3 +87,8 @@ PGPASSWORD="$$POSTGRES_PASSWORD" psql -v ON_ERROR_STOP=1 -U "$$POSTGRES_USER" -d
   -c "SELECT COUNT(*) AS entry_points FROM workflow_entry_points;" \
   -c "SELECT COUNT(*) AS workflows FROM workflows;"'
 	@echo "✅ Verification complete."
+
+orchestration-agent:
+	@echo "--> Running orchestration agent..."
+	@$(RUN_WORKER_CMD) 'set -euo pipefail; cd $(WORKDIR); PYTHONPATH=$(WORKDIR) python scripts/run_orchestration_agent.py $(ORCHESTRATION_FLAGS)'
+	@echo "✅ Orchestration agent run complete."
