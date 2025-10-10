@@ -32,3 +32,24 @@ of the trace. Add `--enable-llm-narrative` (optionally with `--narrative-model` 
 `--narrative-system-prompt`) to let an LLM polish the macro narrative while still
 falling back to the deterministic text when the call fails. The agent automatically
 skips work that has already been completed during the current run.
+
+## Interactive exploration inside Docker
+
+For the top-down interactive explorer (`workflow_tracing.trace_top_down.cli`), make
+sure the container session has a TTY attached; otherwise stdin is treated as a pipe
+and the CLI disables interactive prompts. The `Makefile` provides a convenience target
+that sets up the proper `docker compose exec -it …` invocation:
+
+```bash
+make trace-top-down TRACE_TOP_DOWN_FLAGS="--root-path /app/ragflow-main --summary-path results/orchestration.json"
+```
+_(The target reattaches stdin via `/dev/tty`, so run it from a real terminal, not from within another tool that strips the TTY.)_
+
+You can also run it manually if you need finer control:
+
+```bash
+docker compose exec -it worker bash -lc 'cd /app && PYTHONPATH=/app python -m workflow_tracing.trace_top_down.cli --root-path /app/ragflow-main'
+```
+
+Both approaches ensure `stdin` remains a TTY so you can type follow-up component
+keywords (for example, `document parser`) and receive iterative trace refinements.

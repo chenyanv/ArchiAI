@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 from typing import Sequence
 
@@ -108,6 +109,27 @@ def run(argv: Sequence[str] | None = None) -> int:
     database_url = resolve_database_url(args.database_url)
     orchestration_summary = _load_orchestration_summary(args.summary_path)
 
+    tty_stream = None
+    stdin_is_tty = sys.stdin.isatty()
+    stdout_is_tty = sys.stdout.isatty()
+    if not stdin_is_tty:
+        try:
+            tty_stream = open("/dev/tty")  # noqa: PTH123 - intentionally access TTY device
+        except OSError:
+            pass
+        else:
+            sys.stdin = tty_stream
+            if hasattr(sys, "__stdin__"):
+                sys.__stdin__ = tty_stream  # type: ignore[attr-defined]
+            stdin_is_tty = sys.stdin.isatty()
+
+    print(
+        f"[trace-top-down] stdin_tty={stdin_is_tty} stdout_tty={stdout_is_tty}",
+        flush=True,
+    )
+    if tty_stream is not None and stdin_is_tty:
+        print("[trace-top-down] attached /dev/tty for interactive input.", flush=True)
+
     config = TopDownAgentConfig(
         database_url=database_url,
         root_path=args.root_path,
@@ -124,12 +146,20 @@ def run(argv: Sequence[str] | None = None) -> int:
         analysis_model=args.analysis_model,
         analysis_system_prompt=args.analysis_system_prompt,
         verbose=args.verbose,
+        interactive_enabled=stdin_is_tty,
     )
 
     graph = build_top_down_graph(config)
 
     if args.verbose:
         print("Launching top-down trace explorer...", flush=True)
+
+    if not stdin_is_tty:
+        print(
+            "Interactive input is unavailable because stdin is not a TTY. "
+            "The explorer will run in non-interactive mode.",
+            flush=True,
+        )
 
     initial_state: TopDownAgentState = {
         "config": config,
@@ -162,6 +192,12 @@ def run(argv: Sequence[str] | None = None) -> int:
             print("Trace tokens registered: %d" % len(registry))
         print("Top-down trace explorer finished.", flush=True)
 
+    if tty_stream is not None:
+        try:
+            tty_stream.close()
+        except OSError:
+            pass
+
     return 0
 
 
@@ -171,3 +207,6 @@ def main() -> None:
 
 __all__ = ["main", "parse_args", "run"]
 
+
+if __name__ == "__main__":
+    main()

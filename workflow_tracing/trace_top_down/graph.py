@@ -41,6 +41,7 @@ def build_top_down_graph(config: TopDownAgentConfig) -> StateGraph:
     )
 
     graph = StateGraph(TopDownAgentState)
+    config_ref = config
 
     def initialise(state: TopDownAgentState) -> TopDownAgentState:
         events = list(state.get("events", []))
@@ -111,7 +112,7 @@ def build_top_down_graph(config: TopDownAgentConfig) -> StateGraph:
         }
 
     def interactive_loop(state: TopDownAgentState) -> TopDownAgentState:
-        config = state["config"]
+        config = state.get("config", config_ref)
         planner_output = state.get("planner_output")
         directories = list(state.get("directory_insights", []))
         profiles = list(state.get("profile_insights", []))
@@ -121,6 +122,22 @@ def build_top_down_graph(config: TopDownAgentConfig) -> StateGraph:
         if planner_output is None:
             print("Planner output missing; aborting interactive exploration.")
             return state
+
+        if not config.interactive_enabled:
+            _display_initial_summary(planner_output, config, directories)
+            print(
+                "Interactive input disabled (stdin is not a TTY). Skipping interactive loop.",
+                flush=True,
+            )
+            events = list(state.get("events", []))
+            events.append("Interactive loop skipped (stdin not a TTY).")
+            return {
+                "events": events,
+                "errors": list(state.get("errors", [])),
+                "trace_registry": registry,
+                "history": history,
+                "planner_output": planner_output,
+            }
 
         _display_initial_summary(planner_output, config, directories)
 
@@ -226,32 +243,33 @@ def _display_initial_summary(
     config: TopDownAgentConfig,
     directories: Sequence[DirectoryInsight],
 ) -> None:
-    print("")
-    print("=== Macro Workflow Summary ===")
-    print(planner_output.summary)
+    print("", flush=True)
+    print("=== Macro Workflow Summary ===", flush=True)
+    print(planner_output.summary, flush=True)
     if planner_output.notes:
-        print("")
-        print("Notes:")
+        print("", flush=True)
+        print("Notes:", flush=True)
         for note in planner_output.notes:
-            print(f"- {note}")
-    print("")
-    print("Primary Components (trace using numbers, keywords, or listed trace tokens):")
+            print(f"- {note}", flush=True)
+    print("", flush=True)
+    print("Primary Components (trace using numbers, keywords, or listed trace tokens):", flush=True)
     for idx, component in enumerate(planner_output.components, start=1):
         keywords = ", ".join(component.keywords) if component.keywords else "No keywords provided."
         tokens = ", ".join(component.trace_tokens) if component.trace_tokens else "No trace tokens yet."
-        print(f"{idx}. {component.name}")
-        print(f"   Description: {component.description}")
-        print(f"   Keywords: {keywords}")
-        print(f"   Trace Tokens: {tokens}")
+        print(f"{idx}. {component.name}", flush=True)
+        print(f"   Description: {component.description}", flush=True)
+        print(f"   Keywords: {keywords}", flush=True)
+        print(f"   Trace Tokens: {tokens}", flush=True)
         if component.evidence:
-            print(f"   Evidence: {', '.join(component.evidence)}")
-    print("")
+            print(f"   Evidence: {', '.join(component.evidence)}", flush=True)
+    print("", flush=True)
     project_name = _infer_project_name(config, directories, planner_output.summary)
     print(
         "Enter a component keyword, file path, trace token, or type 'list' to see available tokens. "
-        "Type 'exit' when finished."
+        "Type 'exit' when finished.",
+        flush=True,
     )
-    print(f"(Project context inferred as: {project_name})")
+    print(f"(Project context inferred as: {project_name})", flush=True)
 
 
 def _display_help() -> None:
@@ -260,18 +278,19 @@ def _display_help() -> None:
         "  - Enter any keyword (e.g., 'document parser') to see existing implementations.\n"
         "  - Enter a trace token (directory path, profile ID, component alias) to drill down directly.\n"
         "  - 'list' shows known trace tokens.\n"
-        "  - 'exit' ends the session."
+        "  - 'exit' ends the session.",
+        flush=True,
     )
 
 
 def _display_trace_tokens(registry: TraceRegistry) -> None:
     seeds = registry.all()
     if not seeds:
-        print("No trace tokens registered yet.")
+        print("No trace tokens registered yet.", flush=True)
         return
-    print("Trace tokens that you can use directly:")
+    print("Trace tokens that you can use directly:", flush=True)
     for seed in seeds:
-        print(f"- {seed.token} ({seed.kind}) — {seed.label}")
+        print(f"- {seed.token} ({seed.kind}) — {seed.label}", flush=True)
 
 
 def _run_component_analysis(
@@ -320,30 +339,33 @@ def _run_component_analysis(
 
 
 def _display_exploration(exploration) -> None:
-    print("")
-    print(f"=== {exploration.query} ===")
-    print(exploration.analysis or "No analysis returned.")
+    print("", flush=True)
+    print(f"=== {exploration.query} ===", flush=True)
+    print(exploration.analysis or "No analysis returned.", flush=True)
     if exploration.options:
-        print("")
-        print("Options:")
+        print("", flush=True)
+        print("Options:", flush=True)
         for option in exploration.options:
-            print(f"- {option.title}")
+            print(f"- {option.title}", flush=True)
             if option.rationale:
-                print(f"  Rationale: {option.rationale}")
-            print(f"  Workflow: {option.workflow}")
+                print(f"  Rationale: {option.rationale}", flush=True)
+            print(f"  Workflow: {option.workflow}", flush=True)
             if option.trace_tokens:
-                print(f"  Trace Tokens: {', '.join(option.trace_tokens)}")
+                print(f"  Trace Tokens: {', '.join(option.trace_tokens)}", flush=True)
             if option.considerations:
-                print(f"  Considerations: {', '.join(option.considerations)}")
+                print(f"  Considerations: {', '.join(option.considerations)}", flush=True)
     if exploration.trace_seeds:
-        print("")
-        print("Trace seeds you can reuse next:")
+        print("", flush=True)
+        print("Trace seeds you can reuse next:", flush=True)
         for seed in exploration.trace_seeds:
             summary = seed.description or seed.summary or ""
             summary = summary[:180] + "..." if summary and len(summary) > 180 else summary
-            print(f"- {seed.token} ({seed.kind}) — {seed.label}")
+            print(f"- {seed.token} ({seed.kind}) — {seed.label}", flush=True)
             if summary:
-                print(f"  {summary}")
+                print(f"  {summary}", flush=True)
+    print("", flush=True)
+
+
 def _build_component_seeds(planner_output) -> List[TraceSeed]:
     seeds: List[TraceSeed] = []
     for component in planner_output.components:

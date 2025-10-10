@@ -11,14 +11,16 @@ PROFILE ?=
 PRINT_JSON ?= 0
 DEBUG ?= 0
 ORCHESTRATION_FLAGS ?=
+TRACE_TOP_DOWN_FLAGS ?=
 BOOL_TRUE := 1 true TRUE yes YES on ON
 
 AST_ROOT ?= $(WORKDIR)/ragflow-main
 
 RUN_WORKER_CMD = $(COMPOSE) exec -T worker bash -lc
+RUN_WORKER_INTERACTIVE_CMD = $(COMPOSE) exec -it worker bash -lc
 RUN_POSTGRES_CMD = $(COMPOSE) exec -T postgres bash -lc
 
-.PHONY: all summaries wait-summaries directories synthesize verify up down status reset ast orchestration-agent
+.PHONY: all summaries wait-summaries directories synthesize verify up down status reset ast orchestration-agent trace-top-down
 
 all: summaries wait-summaries directories synthesize verify
 	@echo "🎉 Pipeline finished successfully!"
@@ -92,3 +94,8 @@ orchestration-agent:
 	@echo "--> Running orchestration agent..."
 	@$(RUN_WORKER_CMD) 'set -euo pipefail; cd $(WORKDIR); PYTHONPATH=$(WORKDIR) python scripts/run_orchestration_agent.py $(ORCHESTRATION_FLAGS)'
 	@echo "✅ Orchestration agent run complete."
+
+trace-top-down:
+	@echo "--> Launching top-down trace explorer (interactive)..."
+	@$(RUN_WORKER_INTERACTIVE_CMD) 'set -euo pipefail; cd $(WORKDIR); PYTHONPATH=$(WORKDIR) python -m workflow_tracing.trace_top_down.cli $(TRACE_TOP_DOWN_FLAGS)' </dev/tty
+	@echo "✅ Top-down trace explorer finished."

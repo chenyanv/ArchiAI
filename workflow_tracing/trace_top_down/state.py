@@ -32,6 +32,7 @@ class TopDownAgentConfig:
     analysis_model: Optional[str] = None
     analysis_system_prompt: Optional[str] = None
     verbose: bool = False
+    interactive_enabled: bool = True
 
 
 class TopDownAgentState(TypedDict, total=False):
@@ -174,4 +175,3 @@ __all__ = [
     "append_event",
     "extend_events",
 ]
-
