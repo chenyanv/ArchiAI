@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from typing import List
 
-from .context import EntryPointCandidateSnippet, L1SummaryContext, RelatedProfileSnippet
+from .context import (
+    DirectorySummaryContext,
+    EntryPointCandidateSnippet,
+    L1SummaryContext,
+    RelatedProfileSnippet,
+)
 
 _MAX_LIST_ITEMS = 12
 _MAX_RELATED_ITEMS = 5
@@ -52,6 +57,47 @@ def build_l1_messages(context: L1SummaryContext) -> List[dict[str, str]]:
             "content": (
                 "You are a principal workflow systems architect. Interpret the supplied metadata and source code, "
                 "ground every statement in evidence, prefer 'Unknown' to speculation, and obey the response format exactly."
+            ),
+        },
+        {
+            "role": "user",
+            "content": instruction + "\n\n=== Context ===\n" + user_content,
+        },
+    ]
+
+
+def build_directory_messages(context: DirectorySummaryContext) -> List[dict[str, str]]:
+    instruction = (
+        "You are a principal software architect reviewing a directory of source files. "
+        "Your task is to analyse the provided file-level summaries and produce an aggregated "
+        "directory overview. Respond strictly with a JSON object that matches this schema:\n"
+        '{"directory":"","overview":"","key_capabilities":[],"notable_entry_points":[],"dependencies":[],"follow_up":[]}'
+        "\nFill every field using only evidence from the context. "
+        "overview should be a concise paragraph (<=3 sentences). "
+        "key_capabilities should list the most important responsibilities in priority order. "
+        "notable_entry_points should list file names or callables that initiate workflows (if none, leave the array empty). "
+        "dependencies should capture external systems, services, or important collaborators. "
+        "follow_up should contain open questions or gaps for further investigation. "
+        "Do not invent facts or add extra keys. Use 'Unknown' when evidence is missing."
+    )
+
+    file_section = _format_directory_files(context.files)
+    root_path = context.root_path or "(unspecified)"
+
+    user_content = (
+        f"Root path: {root_path}\n"
+        f"Directory: {context.directory_path}\n"
+        f"File count: {len(context.files)}\n"
+        "\n=== File Summaries ===\n"
+        f"{file_section}"
+    )
+
+    return [
+        {
+            "role": "system",
+            "content": (
+                "You are a pragmatic architecture analyst. Ground all statements in the supplied evidence, "
+                "prefer 'Unknown' to speculation, and return JSON matching the requested schema."
             ),
         },
         {
@@ -118,4 +164,37 @@ def _format_entry_point_candidates(candidates: List[EntryPointCandidateSnippet])
     return "\n".join(lines)
 
 
-__all__ = ["build_l1_messages"]
+def _format_directory_files(files: List["DirectoryFileSummary"]) -> str:
+    if not files:
+        return "(no files with L1 summaries)"
+
+    lines: List[str] = []
+    for idx, file_summary in enumerate(files, start=1):
+        summary = file_summary.summary or {}
+        workflow_hints = file_summary.workflow_hints or {}
+        entry_point = file_summary.entry_point or {}
+
+        core_identity = summary.get("core_identity") or summary.get("business_intent") or "Unknown"
+        business_intent = summary.get("business_intent", "Unknown")
+        data_flow = summary.get("data_flow") or {}
+        inputs = ", ".join(data_flow.get("inputs", [])) if isinstance(data_flow, dict) else "Unknown"
+        outputs = ", ".join(data_flow.get("outputs", [])) if isinstance(data_flow, dict) else "Unknown"
+        hints_role = workflow_hints.get("role", "Unknown") if isinstance(workflow_hints, dict) else "Unknown"
+        entry_id = entry_point.get("profile_id", "None") if isinstance(entry_point, dict) else "None"
+
+        lines.append(
+            (
+                f"{idx}. File: {file_summary.file_path}\n"
+                f"   Summary core_identity: {core_identity}\n"
+                f"   Summary business_intent: {business_intent}\n"
+                f"   Data inputs: {inputs or 'Unknown'}\n"
+                f"   Data outputs: {outputs or 'Unknown'}\n"
+                f"   Workflow role: {hints_role}\n"
+                f"   Suggested entry point: {entry_id}"
+            )
+        )
+
+    return "\n".join(lines)
+
+
+__all__ = ["build_l1_messages", "build_directory_messages"]
