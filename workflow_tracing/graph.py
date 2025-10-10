@@ -7,6 +7,7 @@ from typing import List, Sequence
 
 from langgraph.graph import StateGraph
 
+from workflow_tracing.hints import extract_directory_hints
 from .models import DirectoryInsight, TraceNarrative
 from .state import WorkflowAgentConfig, WorkflowAgentState, append_event
 from .synthesizer import NarrativeSynthesisLLM, TraceNarrativeComposer
@@ -30,7 +31,7 @@ def build_workflow_graph(config: WorkflowAgentConfig) -> StateGraph:
         events = list(state.get("events", []))
         errors = list(state.get("errors", []))
         summary = config.orchestration_summary
-        hints = _extract_directory_hints(summary)
+        hints = extract_directory_hints(summary)
 
         if hints:
             events.append(
@@ -156,34 +157,6 @@ def build_workflow_graph(config: WorkflowAgentConfig) -> StateGraph:
     graph.set_finish_point("finish")
 
     return graph.compile()
-
-
-def _extract_directory_hints(summary: str | None) -> List[str]:
-    if not summary:
-        return []
-
-    candidates: set[str] = set()
-    bold_matches = re.findall(r"\*\*([^*]+)\*\*", summary)
-    candidates.update(_normalise_hint(item) for item in bold_matches)
-
-    slash_matches = re.findall(r"([A-Za-z0-9_\-]+)/", summary)
-    candidates.update(_normalise_hint(item) for item in slash_matches)
-
-    directory_matches = re.findall(r"([A-Za-z0-9_\-]+)\s+directory", summary, flags=re.IGNORECASE)
-    candidates.update(_normalise_hint(item) for item in directory_matches)
-
-    cleaned = [item for item in candidates if item]
-    cleaned.sort()
-    return cleaned
-
-
-def _normalise_hint(value: str) -> str:
-    cleaned = (value or "").strip().lower()
-    cleaned = cleaned.strip("*").strip()
-    cleaned = cleaned.replace("\\", "/")
-    if cleaned.startswith("./"):
-        cleaned = cleaned[2:]
-    return cleaned
 
 
 def _infer_project_name(
