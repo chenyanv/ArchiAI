@@ -19,9 +19,9 @@ from .models import (
 )
 
 _DEFAULT_PLANNER_SYSTEM = (
-    "You are an architectural strategist tasked with communicating the highest level business logic in a "
-    "software system. Respond with concise, structured insights so that an engineering team can quickly "
-    "understand the macro-level workflow before drilling into code."
+    "You are a senior solutions architect onboarding a new engineer. Translate the component inventory into a "
+    "coherent, stage-by-stage story of how the system delivers value. Highlight how data and control move between "
+    "stages while grounding every claim in the supplied evidence."
 )
 _DEFAULT_ANALYST_SYSTEM = (
     "You help engineers inspect existing implementation details for a requested component. Use the supplied "
@@ -251,28 +251,30 @@ def _build_planner_prompt(
         )
 
     instruction = (
-        "You will receive context about a repository: directory summaries, optional orchestration narrative, "
-        "and representative profiles. Produce a JSON object describing the top-level business logic with "
-        f"no more than {component_limit} major components. Each component must reference trace tokens where possible, "
-        "so the user can keep drilling down.\n\n"
-        "Required JSON schema:\n"
+        "Synthesize the macro-level workflow from the supplied repository context. Identify the sequential stages "
+        "that carry a request from intake to completion, weave the key components into each stage, and explain how "
+        "outputs hand off to the next stage.\n\n"
+        "Return JSON with this schema:\n"
         "{\n"
-        '  "summary": "<125-word macro narrative>",\n'
+        '  "summary": "High-level narrative (<=6 sentences) that walks through each stage by name, citing the main directories or profiles powering that hand-off.",\n'
         '  "components": [\n'
         "    {\n"
-        '      "name": "Short capability name",\n'
-        '      "description": "What the capability delivers",\n'
-        '      "keywords": ["list", "of", "anchor", "terms"],\n'
-        '      "trace_tokens": ["token-from-provided-list"],\n'
-        '      "evidence": ["directory or file references backing the component"]\n'
+        '      "name": "Stage N — Descriptive title",\n'
+        '      "description": "2-4 sentence narrative describing what happens, which components act (cite specific directories or profiles), and how the stage hands off.",\n'
+        '      "keywords": ["key components, directories, outcomes"],\n'
+        '      "trace_tokens": ["tokens taken from the provided list that anchor this stage"],\n'
+        '      "evidence": ["directories or files from the context that substantiate the narrative"]\n'
         "    }\n"
         "  ],\n"
-        '  "notes": ["optional caveats"]\n'
+        '  "notes": ["optional uncertainties or next-investigation items"]\n'
         "}\n\n"
-        "Rules:\n"
-        "- Keep components distinct and at business capability level.\n"
-        "- Only use trace tokens from the provided list; if none apply, leave trace_tokens empty.\n"
-        "- Use evidence field to cite directories or files that support the component.\n"
+        "Guidance:\n"
+        f"- Deliver no more than {component_limit} stages that together read like an assembly guide rather than a parts list.\n"
+        "- Stage descriptions must be paragraph narrative, not bullet lists.\n"
+        "- Explicitly call out how data or control flows between stages and what each stage produces.\n"
+        "- Group components under the stage where they do the bulk of the work and mention their roles clearly, referencing directory names where possible.\n"
+        "- Only use trace tokens that appear in the provided list; if none apply, leave the array empty.\n"
+        "- Cite directories or files in evidence so the reader can inspect the implementation.\n"
         "- Respond with JSON only."
     )
 
@@ -301,7 +303,8 @@ def _parse_planner_response(
     directories: Sequence[DirectoryInsight],
     component_limit: int,
 ) -> PlannerOutput:
-    data = json.loads(response)
+    payload = _extract_json_fragment(response)
+    data = json.loads(payload)
     if not isinstance(data, dict):
         raise ValueError("Planner response must be a JSON object.")
 
@@ -343,6 +346,28 @@ def _parse_planner_response(
         )
 
     return PlannerOutput(summary=summary, components=components, notes=notes)
+
+
+def _extract_json_fragment(raw_response: str) -> str:
+    text = (raw_response or "").strip()
+    if not text:
+        raise ValueError("Planner response was empty.")
+
+    if text.startswith("```"):
+        lines = text.splitlines()
+        fence = lines[0]
+        if fence.startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].startswith("```"):
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        raise ValueError("Planner response did not contain a JSON object.")
+
+    return text[start : end + 1]
 
 
 def _build_analyst_prompt(
