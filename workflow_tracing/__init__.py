@@ -3,32 +3,28 @@
 from __future__ import annotations
 
 __all__ = [
-    "CallGraphBuilder",
-    "CallGraphEdge",
-    "CallGraphNode",
-    "ConfidenceLevel",
-    "EntryPointCategory",
-    "EntryPointCandidate",
-    "EntryPointScanner",
+    "DirectoryInsight",
+    "DirectoryInsightTool",
+    "NarrativeSynthesisLLM",
+    "ProfileInsight",
+    "ProfileInsightTool",
+    "TraceNarrative",
+    "TraceNarrativeBuilder",
+    "TraceNarrativeComposer",
+    "TraceStage",
     "WorkflowAgentConfig",
     "WorkflowAgentState",
-    "WorkflowScript",
-    "WorkflowStep",
     "WorkflowSynthesizer",
     "build_workflow_graph",
 ]
 
-from .models import (
-    CallGraphEdge,
-    CallGraphNode,
-    ConfidenceLevel,
-    EntryPointCandidate,
-    EntryPointCategory,
-    WorkflowScript,
-    WorkflowStep,
-)
-from .entry_scanner import EntryPointScanner
-from .call_graph import CallGraphBuilder
 from .graph import build_workflow_graph
+from .models import (
+    DirectoryInsight,
+    ProfileInsight,
+    TraceNarrative,
+    TraceStage,
+)
 from .state import WorkflowAgentConfig, WorkflowAgentState
-from .synthesizer import WorkflowSynthesizer
+from .synthesizer import NarrativeSynthesisLLM, TraceNarrativeBuilder, TraceNarrativeComposer, WorkflowSynthesizer
+from .tools import DirectoryInsightTool, ProfileInsightTool

@@ -4,35 +4,33 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Sequence, TypedDict
 
-from .models import (
-    CallGraphEdge,
-    CallGraphNode,
-    EntryPointCandidate,
-    WorkflowScript,
-)
+from .models import DirectoryInsight, ProfileInsight, TraceNarrative
 
 
 @dataclass(frozen=True, slots=True)
 class WorkflowAgentConfig:
     database_url: Optional[str] = None
     root_path: Optional[str] = None
-    include_tests: bool = False
-    max_depth: int = 6
-    max_steps: int = 20
-    entry_points_path: Path = Path("results/entry_points.json")
-    call_graph_path: Path = Path("results/call_graph.json")
-    workflow_scripts_path: Path = Path("results/workflow_scripts.json")
+    max_directories: int = 6
+    profiles_per_directory: int = 4
+    trace_output_path: Path = Path("results/workflow_trace.md")
+    trace_json_path: Path = Path("results/workflow_trace.json")
     orchestration_summary: Optional[str] = None
+    verbose: bool = False
+    enable_llm_narrative: bool = False
+    narrative_model: Optional[str] = None
+    narrative_system_prompt: Optional[str] = None
 
 
 class WorkflowAgentState(TypedDict, total=False):
     config: WorkflowAgentConfig
     events: List[str]
     errors: List[str]
-    entry_points: List[EntryPointCandidate]
-    call_graph_nodes: List[CallGraphNode]
-    call_graph_edges: List[CallGraphEdge]
-    workflows: List[WorkflowScript]
+    orchestration_summary: Optional[str]
+    directory_hints: List[str]
+    directory_insights: List[DirectoryInsight]
+    profile_insights: List[ProfileInsight]
+    trace_narrative: TraceNarrative
 
 
 def append_event(state: WorkflowAgentState, message: str) -> WorkflowAgentState:

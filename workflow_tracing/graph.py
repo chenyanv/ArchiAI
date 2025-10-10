@@ -1,262 +1,223 @@
 from __future__ import annotations
 
-from contextlib import contextmanager
-from dataclasses import dataclass
+import json
+import re
+from pathlib import Path
+from typing import List, Sequence
 
 from langgraph.graph import StateGraph
-from sqlalchemy.orm import Session
 
-from structural_scaffolding.database import ProfileRecord, create_session
-
-from .call_graph import CallGraphBuilder
-from .entry_scanner import EntryPointScanner
-from .models import CallGraphEdge, CallGraphNode, EntryPointCandidate, WorkflowScript
+from .models import DirectoryInsight, TraceNarrative
 from .state import WorkflowAgentConfig, WorkflowAgentState, append_event
-from .synthesizer import WorkflowSynthesizer
+from .synthesizer import NarrativeSynthesisLLM, TraceNarrativeComposer
+from .tools import DirectoryInsightTool, ProfileInsightTool
 
 
 def build_workflow_graph(config: WorkflowAgentConfig) -> StateGraph:
+    directory_tool = DirectoryInsightTool(max_directories=config.max_directories)
+    profile_tool = ProfileInsightTool(max_profiles_per_directory=config.profiles_per_directory)
+    narrative_llm = None
+    if config.enable_llm_narrative:
+        narrative_llm = NarrativeSynthesisLLM(
+            model=config.narrative_model,
+            system_prompt=config.narrative_system_prompt,
+        )
+    composer = TraceNarrativeComposer(narrative_llm=narrative_llm)
+
     graph = StateGraph(WorkflowAgentState)
 
-    @contextmanager
-    def _session_scope() -> Session:
-        session = create_session(config.database_url)
-        try:
-            yield session
-        finally:
-            session.close()
-
-    def _decide_next_step(state: WorkflowAgentState) -> WorkflowAgentState:
-        return state
-
-    def _decide_route(state: WorkflowAgentState) -> str:
-        if "entry_points" not in state:
-            return "scan_entry_points"
-        if "call_graph_edges" not in state:
-            return "build_call_graph"
-        if "workflows" not in state:
-            return "synthesise_workflows"
-        return "finish"
-
-    def _scan_entry_points(state: WorkflowAgentState) -> WorkflowAgentState:
+    def initialise(state: WorkflowAgentState) -> WorkflowAgentState:
         events = list(state.get("events", []))
         errors = list(state.get("errors", []))
-        resolved_root_path = state.get("resolved_root_path", config.root_path)
-        available_root_paths = list(state.get("available_root_paths", []))
+        summary = config.orchestration_summary
+        hints = _extract_directory_hints(summary)
 
-        try:
-            with _session_scope() as session:
-                if not available_root_paths:
-                    available_root_paths = sorted(
-                        {row[0] for row in session.query(ProfileRecord.root_path).distinct()}
-                    )
-
-                resolution = _resolve_root_path(
-                    requested=config.root_path,
-                    current=resolved_root_path,
-                    available=available_root_paths,
-                )
-                events.extend(resolution.events)
-                errors.extend(resolution.errors)
-                if resolution.resolved is None:
-                    return {
-                        "events": events,
-                        "errors": errors,
-                        "available_root_paths": available_root_paths,
-                    }
-                resolved_root_path = resolution.resolved
-
-                scanner = EntryPointScanner(
-                    session,
-                    root_path=resolved_root_path,
-                    include_tests=config.include_tests,
-                )
-                candidates: list[EntryPointCandidate] = scanner.scan()
-                scanner.export(candidates, config.entry_points_path)
-                diagnostics = scanner.diagnostics
-        except Exception as exc:  # noqa: BLE001
-            errors.append(f"entry_scan: {exc}")
-            return {"errors": errors, "events": events}
-
-        if diagnostics:
+        if hints:
             events.append(
-                "Entry scan stats: profiles=%d, signals=%d, detected_profiles=%d, candidates=%d "
-                "(root_path=%r, include_tests=%s, skipped_test_path=%d, skipped_test_name=%d, skipped_missing_name=%d)"
-                % (
-                    diagnostics.profile_count,
-                    diagnostics.signals_count,
-                    diagnostics.detected_profiles,
-                    diagnostics.candidate_count,
-                    diagnostics.root_path,
-                    diagnostics.include_tests,
-                    diagnostics.skipped_test_path,
-                    diagnostics.skipped_test_name,
-                    diagnostics.skipped_missing_name,
-                )
+                "Extracted directory hints from orchestration summary: %s"
+                % ", ".join(sorted(hints))
             )
-            if diagnostics.sample_paths:
-                sample = ", ".join(diagnostics.sample_paths)
-                events.append(f"Entry scan sample paths: {sample}")
+        else:
+            events.append("No directory hints detected; defaulting to top-level summaries.")
 
-        events.append(f"Identified {len(candidates)} entry point candidates.")
         return {
-            "entry_points": candidates,
             "events": events,
             "errors": errors,
-            "resolved_root_path": resolved_root_path,
-            "available_root_paths": available_root_paths,
+            "orchestration_summary": summary,
+            "directory_hints": hints,
         }
 
-    def _build_call_graph(state: WorkflowAgentState) -> WorkflowAgentState:
+    def collect_directories(state: WorkflowAgentState) -> WorkflowAgentState:
         events = list(state.get("events", []))
         errors = list(state.get("errors", []))
-        resolved_root_path = state.get("resolved_root_path", config.root_path)
+        hints = list(state.get("directory_hints", []))
 
         try:
-            with _session_scope() as session:
-                builder = CallGraphBuilder(session, root_path=resolved_root_path)
-                nodes, edges = builder.build()
-                builder.export(nodes, edges, config.call_graph_path)
-                diagnostics = builder.diagnostics
-        except Exception as exc:  # noqa: BLE001
-            errors.append(f"call_graph: {exc}")
-            return {"errors": errors, "events": events}
+            directories = directory_tool(config, hints)
+        except Exception as exc:  # noqa: BLE001 - bubble details to user
+            errors.append(f"directory_insights: {exc}")
+            return {"events": events, "errors": errors, "directory_insights": []}
 
-        if diagnostics:
-            events.append(
-                "Call graph stats: profiles=%d, records_with_calls=%d, edges=%d (root_path=%r)"
-                % (
-                    diagnostics.profile_count,
-                    diagnostics.records_with_calls,
-                    diagnostics.edge_count,
-                    resolved_root_path or diagnostics.root_path,
-                )
-            )
-            if diagnostics.sample_callers:
-                sample = ", ".join(diagnostics.sample_callers)
-                events.append(f"Call graph sample caller files: {sample}")
-
-        events.append(f"Constructed call graph with {len(nodes)} nodes and {len(edges)} edges.")
+        events.append(f"Collected {len(directories)} directory summaries.")
         return {
-            "call_graph_nodes": nodes,
-            "call_graph_edges": edges,
             "events": events,
             "errors": errors,
-            "resolved_root_path": resolved_root_path,
+            "directory_insights": directories,
         }
 
-    def _synthesise_workflows(state: WorkflowAgentState) -> WorkflowAgentState:
+    def collect_profiles(state: WorkflowAgentState) -> WorkflowAgentState:
         events = list(state.get("events", []))
         errors = list(state.get("errors", []))
-        entry_points: list[EntryPointCandidate] = state.get("entry_points", []) or []
-        edges: list[CallGraphEdge] = state.get("call_graph_edges", []) or []
+        directories = list(state.get("directory_insights", []))
 
         try:
-            with _session_scope() as session:
-                synthesiser = WorkflowSynthesizer(
-                    session,
-                    orchestration_summary=config.orchestration_summary,
-                    max_depth=config.max_depth,
-                    max_steps=config.max_steps,
-                )
-                scripts: list[WorkflowScript] = synthesiser.synthesise(entry_points, edges)
-                synthesiser.export(scripts, config.workflow_scripts_path)
+            profiles = profile_tool(config, directories)
         except Exception as exc:  # noqa: BLE001
-            errors.append(f"workflow_synthesis: {exc}")
-            return {"errors": errors, "events": events}
+            errors.append(f"profile_insights: {exc}")
+            return {"events": events, "errors": errors, "profile_insights": []}
 
-        events.append(f"Synthesised {len(scripts)} workflow scripts.")
+        events.append(f"Collected {len(profiles)} profile highlights.")
         return {
-            "workflows": scripts,
             "events": events,
             "errors": errors,
+            "profile_insights": profiles,
         }
 
-    def _finish(state: WorkflowAgentState) -> WorkflowAgentState:
+    def compose_narrative(state: WorkflowAgentState) -> WorkflowAgentState:
+        events = list(state.get("events", []))
+        errors = list(state.get("errors", []))
+        directories = list(state.get("directory_insights", []))
+        profiles = list(state.get("profile_insights", []))
+        orchestration_summary = state.get("orchestration_summary")
+
+        project_name = _infer_project_name(config, directories, orchestration_summary)
+
+        try:
+            narrative = composer.compose(
+                orchestration_summary=orchestration_summary,
+                directories=directories,
+                profiles=profiles,
+                project_name=project_name,
+            )
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"narrative: {exc}")
+            return {"events": events, "errors": errors}
+
+        events.append(
+            "Composed workflow narrative with %d primary stages." % len(narrative.stages)
+        )
+        for note in getattr(narrative, "notes", []) or []:
+            if note:
+                events.append(f"Narrative note: {note}")
+        return {
+            "events": events,
+            "errors": errors,
+            "trace_narrative": narrative,
+        }
+
+    def write_outputs(state: WorkflowAgentState) -> WorkflowAgentState:
+        events = list(state.get("events", []))
+        errors = list(state.get("errors", []))
+        narrative: TraceNarrative | None = state.get("trace_narrative")
+
+        if narrative is None:
+            errors.append("output: no narrative generated")
+            return {"events": events, "errors": errors}
+
+        try:
+            _write_text(config.trace_output_path, narrative.text)
+            _write_json(config.trace_json_path, narrative)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"output: {exc}")
+            return {"events": events, "errors": errors}
+
+        events.append(
+            "Wrote workflow narrative to %s and structured view to %s."
+            % (config.trace_output_path, config.trace_json_path)
+        )
+        return {"events": events, "errors": errors}
+
+    def finish(state: WorkflowAgentState) -> WorkflowAgentState:
         return append_event(state, "Workflow tracing complete.")
 
-    graph.add_node("decide_next_step", _decide_next_step)
-    graph.add_node("scan_entry_points", _scan_entry_points)
-    graph.add_node("build_call_graph", _build_call_graph)
-    graph.add_node("synthesise_workflows", _synthesise_workflows)
-    graph.add_node("finish", _finish)
+    graph.add_node("initialise", initialise)
+    graph.add_node("collect_directories", collect_directories)
+    graph.add_node("collect_profiles", collect_profiles)
+    graph.add_node("compose_narrative", compose_narrative)
+    graph.add_node("write_outputs", write_outputs)
+    graph.add_node("finish", finish)
 
-    graph.set_entry_point("decide_next_step")
-
-    graph.add_conditional_edges(
-        "decide_next_step",
-        _decide_route,
-        {
-            "scan_entry_points": "scan_entry_points",
-            "build_call_graph": "build_call_graph",
-            "synthesise_workflows": "synthesise_workflows",
-            "finish": "finish",
-        },
-    )
-
-    graph.add_edge("scan_entry_points", "decide_next_step")
-    graph.add_edge("build_call_graph", "decide_next_step")
-    graph.add_edge("synthesise_workflows", "decide_next_step")
-
+    graph.set_entry_point("initialise")
+    graph.add_edge("initialise", "collect_directories")
+    graph.add_edge("collect_directories", "collect_profiles")
+    graph.add_edge("collect_profiles", "compose_narrative")
+    graph.add_edge("compose_narrative", "write_outputs")
+    graph.add_edge("write_outputs", "finish")
     graph.set_finish_point("finish")
 
     return graph.compile()
 
 
-@dataclass(slots=True)
-class _RootPathResolution:
-    resolved: str | None
-    events: list[str]
-    errors: list[str]
+def _extract_directory_hints(summary: str | None) -> List[str]:
+    if not summary:
+        return []
+
+    candidates: set[str] = set()
+    bold_matches = re.findall(r"\*\*([^*]+)\*\*", summary)
+    candidates.update(_normalise_hint(item) for item in bold_matches)
+
+    slash_matches = re.findall(r"([A-Za-z0-9_\-]+)/", summary)
+    candidates.update(_normalise_hint(item) for item in slash_matches)
+
+    directory_matches = re.findall(r"([A-Za-z0-9_\-]+)\s+directory", summary, flags=re.IGNORECASE)
+    candidates.update(_normalise_hint(item) for item in directory_matches)
+
+    cleaned = [item for item in candidates if item]
+    cleaned.sort()
+    return cleaned
 
 
-def _resolve_root_path(
-    *,
-    requested: str | None,
-    current: str | None,
-    available: list[str],
-) -> _RootPathResolution:
-    events: list[str] = []
-    errors: list[str] = []
+def _normalise_hint(value: str) -> str:
+    cleaned = (value or "").strip().lower()
+    cleaned = cleaned.strip("*").strip()
+    cleaned = cleaned.replace("\\", "/")
+    if cleaned.startswith("./"):
+        cleaned = cleaned[2:]
+    return cleaned
 
-    if not available:
-        errors.append("No profiles found in the database. Ensure structural scaffolding has ingested profiles.")
-        return _RootPathResolution(resolved=None, events=events, errors=errors)
 
-    if requested and requested in available:
-        return _RootPathResolution(resolved=requested, events=events, errors=errors)
+def _infer_project_name(
+    config: WorkflowAgentConfig,
+    directories: Sequence[DirectoryInsight],
+    orchestration_summary: str | None,
+) -> str:
+    if config.root_path:
+        candidate = Path(config.root_path).name
+        if candidate:
+            return candidate
 
-    if current and current in available:
-        return _RootPathResolution(resolved=current, events=events, errors=errors)
+    for directory in directories:
+        candidate = Path(directory.root_path).name
+        if candidate:
+            return candidate
 
-    if requested and requested not in available:
-        if len(available) == 1:
-            resolved = available[0]
-            events.append(
-                f"Requested root_path '{requested}' not found; using '{resolved}' (only available root path)."
-            )
-            return _RootPathResolution(resolved=resolved, events=events, errors=errors)
-        errors.append(
-            "Requested root_path '%s' not found. Available root paths: %s"
-            % (requested, ", ".join(available))
-        )
-        return _RootPathResolution(resolved=None, events=events, errors=errors)
+    if orchestration_summary:
+        match = re.search(r"\b([A-Z][A-Za-z0-9]+)\b", orchestration_summary)
+        if match:
+            return match.group(1)
 
-    if not requested:
-        if len(available) == 1:
-            resolved = available[0]
-            events.append(f"No root_path provided; using '{resolved}' (only available root path).")
-            return _RootPathResolution(resolved=resolved, events=events, errors=errors)
+    return "Project"
 
-        errors.append(
-            "Multiple root paths available (%s). Specify --root-path to select one."
-            % ", ".join(available)
-        )
-        return _RootPathResolution(resolved=None, events=events, errors=errors)
 
-    # Fallback should not normally be hit, but guard anyway.
-    errors.append("Unable to resolve a root_path for workflow tracing.")
-    return _RootPathResolution(resolved=None, events=events, errors=errors)
+def _write_text(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+
+
+def _write_json(path: Path, narrative: TraceNarrative) -> None:
+    payload = narrative.to_dict()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
 __all__ = ["build_workflow_graph"]

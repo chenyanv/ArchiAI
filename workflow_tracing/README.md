@@ -1,18 +1,17 @@
 # Workflow Tracing Pipeline
 
-The `workflow_tracing` package builds on the structural scaffolding profiles to expose
-end-to-end business workflows. A LangGraph-driven agent decides which stage to execute
-next, ensuring the run remains adaptive and state-aware. The agent typically walks
-through three phases:
+The `workflow_tracing` package distils structural scaffolding data into a macro-level
+narrative of how a codebase works. A LangGraph-driven agent orchestrates four stages:
 
-1. **Entry point detection** – scans stored `ProfileRecord` rows for likely workflow
-   triggers (web APIs, async consumers, scheduled jobs) using decorator, naming, and
-   location heuristics.
-2. **Call graph assembly** – converts each profile’s captured outbound calls into a
-   lightweight call graph with best-effort resolution back to known profiles.
-3. **Workflow synthesis** – walks the call graph from selected entry points, enriches
-   each hop with the L1 summaries already persisted in the database, and produces a
-   readable “script” describing the business flow.
+1. **Context seeding** – read the orchestration agent’s business summary (when
+   available) and extract directory hints that should be explored first.
+2. **Directory discovery** – fetch directory-level summaries from stored
+   `DirectorySummaryRecord` rows, prioritising matches for the extracted hints.
+3. **Profile deep dives** – surface representative `ProfileRecord` components for each
+   highlighted directory so the agent can inspect real entry points and support code.
+4. **Narrative synthesis** – group the gathered evidence into macro workflow phases
+   (ingestion, retrieval, reasoning) and emit a clean, human-readable overview together
+   with a structured JSON payload.
 
 ## Running the pipeline
 
@@ -25,10 +24,11 @@ python -m workflow_tracing.cli \
 
 Outputs are written by default to:
 
-- `results/entry_points.json`
-- `results/call_graph.json`
-- `results/workflow_scripts.json`
+- `results/workflow_trace.md` – human-friendly narrative.
+- `results/workflow_trace.json` – structured representation of the same narrative.
 
-Use `--include-tests` to keep test modules in the entry scan, and `--max-depth` /
-`--max-steps` to tune workflow expansion. The LangGraph agent will automatically skip
-work that has already been completed during the current run.
+Use `--max-directories` and `--profiles-per-directory` to adjust the breadth and depth
+of the trace. Add `--enable-llm-narrative` (optionally with `--narrative-model` and
+`--narrative-system-prompt`) to let an LLM polish the macro narrative while still
+falling back to the deterministic text when the call fails. The agent automatically
+skips work that has already been completed during the current run.
