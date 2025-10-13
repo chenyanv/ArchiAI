@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass, field
+from pathlib import PurePosixPath
 from typing import Dict, Iterable, List, MutableMapping, Sequence, Set
 
 import networkx as nx
@@ -31,6 +33,385 @@ class CallGraph:
         ]
 
 
+_ROOT_CATEGORY_MAP: Dict[str, str] = {
+    "adapters": "integration",
+    "adapter": "integration",
+    "apis": "controller",
+    "api": "controller",
+    "apps": "controller",
+    "clients": "sdk",
+    "client": "sdk",
+    "common": "utility",
+    "configs": "infrastructure",
+    "config": "infrastructure",
+    "controller": "controller",
+    "controllers": "controller",
+    "dto": "model",
+    "entities": "model",
+    "entity": "model",
+    "fixtures": "test",
+    "helpers": "utility",
+    "helper": "utility",
+    "infra": "infrastructure",
+    "infrastructure": "infrastructure",
+    "integration": "integration",
+    "integrations": "integration",
+    "jobs": "infrastructure",
+    "lib": "utility",
+    "libs": "utility",
+    "model": "model",
+    "models": "model",
+    "ops": "infrastructure",
+    "pipeline": "data_pipeline",
+    "pipelines": "data_pipeline",
+    "plugin": "integration",
+    "plugins": "integration",
+    "providers": "integration",
+    "provider": "integration",
+    "routes": "controller",
+    "router": "controller",
+    "routers": "controller",
+    "schemas": "model",
+    "schema": "model",
+    "sdk": "sdk",
+    "service": "service",
+    "services": "service",
+    "shared": "utility",
+    "scripts": "utility",
+    "script": "utility",
+    "tasks": "infrastructure",
+    "tests": "test",
+    "test": "test",
+    "tooling": "utility",
+    "tools": "utility",
+    "utils": "utility",
+    "utility": "utility",
+    "views": "controller",
+    "workflows": "service",
+    "workflow": "service",
+}
+
+_CATEGORY_PRIORITY: Dict[str, int] = {
+    "external": 100,
+    "test": 95,
+    "service": 90,
+    "controller": 85,
+    "data_pipeline": 80,
+    "model": 78,
+    "integration": 70,
+    "sdk": 65,
+    "infrastructure": 60,
+    "utility": 50,
+    "implementation": 40,
+}
+
+_UTILITY_KEYWORDS: Sequence[str] = (
+    "util",
+    "utils",
+    "helper",
+    "helpers",
+    "common",
+    "shared",
+    "base",
+    "bases",
+    "mixins",
+    "constants",
+    "types",
+    "tool",
+    "toolbox",
+)
+
+_INTEGRATION_KEYWORDS: Sequence[str] = (
+    "integration",
+    "intergration",
+    "connector",
+    "connectors",
+    "adapter",
+    "adapters",
+    "webhook",
+    "webhooks",
+    "plugin",
+    "plugins",
+    "thirdparty",
+    "third_party",
+    "provider",
+    "providers",
+)
+
+_SDK_KEYWORDS: Sequence[str] = (
+    "sdk",
+    "client",
+    "clients",
+    "api_client",
+)
+
+_SERVICE_KEYWORDS: Sequence[str] = (
+    "service",
+    "services",
+    "usecase",
+    "use_case",
+    "usecases",
+    "workflow",
+    "workflows",
+    "manager",
+    "managers",
+    "orchestrator",
+    "orchestrators",
+    "handler",
+    "handlers",
+    "processor",
+    "processors",
+)
+
+_CONTROLLER_KEYWORDS: Sequence[str] = (
+    "controller",
+    "controllers",
+    "router",
+    "routers",
+    "route",
+    "routes",
+    "view",
+    "views",
+    "endpoint",
+    "endpoints",
+    "api",
+)
+
+_MODEL_KEYWORDS: Sequence[str] = (
+    "model",
+    "models",
+    "entity",
+    "entities",
+    "schema",
+    "schemas",
+    "dto",
+    "document",
+    "documents",
+    "record",
+    "records",
+    "serializer",
+    "serializers",
+)
+
+_PIPELINE_KEYWORDS: Sequence[str] = (
+    "pipeline",
+    "pipelines",
+    "ingest",
+    "ingestion",
+    "indexer",
+    "indexing",
+    "retriever",
+    "retrieval",
+    "etl",
+    "extract",
+    "loader",
+    "loaders",
+    "transform",
+    "transforms",
+    "batch",
+    "stream",
+)
+
+_INFRASTRUCTURE_KEYWORDS: Sequence[str] = (
+    "config",
+    "configs",
+    "setting",
+    "settings",
+    "constant",
+    "constants",
+    "credential",
+    "credentials",
+    "secret",
+    "secrets",
+    "env",
+    "environment",
+    "logging",
+    "logger",
+    "metrics",
+    "monitor",
+    "monitoring",
+    "db",
+    "database",
+    "databases",
+    "migrations",
+    "registry",
+    "management",
+    "permission",
+    "permissions",
+    "auth",
+    "authentication",
+    "authorization",
+    "scheduler",
+    "schedulers",
+    "task",
+    "tasks",
+    "celery",
+    "cron",
+    "email",
+    "notification",
+    "notifications",
+)
+
+_TEST_KEYWORDS: Sequence[str] = (
+    "test",
+    "tests",
+    "testing",
+    "fixture",
+    "fixtures",
+)
+
+_SERVICE_SUFFIXES: Sequence[str] = (
+    "service",
+    "manager",
+    "workflow",
+    "handler",
+    "processor",
+    "orchestrator",
+    "usecase",
+)
+
+_CONTROLLER_SUFFIXES: Sequence[str] = (
+    "controller",
+    "router",
+    "endpoint",
+    "view",
+)
+
+_MODEL_SUFFIXES: Sequence[str] = (
+    "model",
+    "entity",
+    "schema",
+    "record",
+    "document",
+    "dto",
+)
+
+_INTEGRATION_SUFFIXES: Sequence[str] = (
+    "connector",
+    "adapter",
+    "integration",
+    "hook",
+    "provider",
+)
+
+_SDK_SUFFIXES: Sequence[str] = (
+    "client",
+    "sdk",
+)
+
+
+def _normalise_path(path: str) -> PurePosixPath:
+    return PurePosixPath(path.replace("\\", "/"))
+
+
+def _contains_keyword(values: Iterable[str], keywords: Sequence[str]) -> bool:
+    for value in values:
+        lowered = value.lower()
+        for keyword in keywords:
+            if keyword in lowered:
+                return True
+    return False
+
+
+def _collect_name_tokens(profile: Profile) -> List[str]:
+    tokens: List[str] = []
+    for value in (profile.class_name, profile.function_name):
+        if not value:
+            continue
+        lowered = value.lower()
+        tokens.append(lowered)
+        sanitized = lowered.replace("-", "_")
+        tokens.extend(segment for segment in sanitized.split("_") if segment)
+    return tokens
+
+
+def _has_suffix(tokens: Iterable[str], suffixes: Sequence[str]) -> bool:
+    for token in tokens:
+        for suffix in suffixes:
+            if token.endswith(suffix):
+                return True
+    return False
+
+
+def _profile_category(profile: Profile) -> str:
+    if profile.kind == "external_call":
+        return "external"
+
+    path_obj = _normalise_path(profile.file_path or "")
+    path_parts = tuple(part.lower() for part in path_obj.parts if part)
+    joined_path = "/".join(path_parts)
+    name_tokens = _collect_name_tokens(profile)
+
+    scores: Dict[str, int] = defaultdict(int)
+    scores["implementation"] = 1
+
+    if not path_parts:
+        return "implementation"
+
+    # Tests & fixtures should always be deprioritised.
+    if "tests/" in joined_path or joined_path.startswith("tests"):
+        scores["test"] += 20
+    if joined_path.endswith("test.py") or joined_path.endswith("_test.py"):
+        scores["test"] += 20
+    if _contains_keyword(path_parts, _TEST_KEYWORDS) or _contains_keyword(name_tokens, _TEST_KEYWORDS):
+        scores["test"] += 15
+
+    # Base category from the top-level package.
+    root_category = _ROOT_CATEGORY_MAP.get(path_parts[0])
+    if root_category:
+        scores[root_category] += 6
+
+    # Utility helpers across the codebase.
+    if _contains_keyword(path_parts, _UTILITY_KEYWORDS) or _contains_keyword(name_tokens, _UTILITY_KEYWORDS):
+        scores["utility"] += 12
+
+    # Infrastructure/configuration modules.
+    if _contains_keyword(path_parts, _INFRASTRUCTURE_KEYWORDS) or _contains_keyword(name_tokens, ("config", "settings", "provider")):
+        scores["infrastructure"] += 10
+
+    # Controllers / API surfaces.
+    if path_parts[0] == "api":
+        scores["controller"] += 12
+    if _contains_keyword(path_parts, _CONTROLLER_KEYWORDS) or _has_suffix(name_tokens, _CONTROLLER_SUFFIXES):
+        scores["controller"] += 10
+
+    # Service layer, orchestrators, workflow managers.
+    if path_parts[0] in {"agent", "agentic_reasoning"}:
+        scores["service"] += 10
+    if _contains_keyword(path_parts, _SERVICE_KEYWORDS) or _has_suffix(name_tokens, _SERVICE_SUFFIXES):
+        scores["service"] += 10
+    if "workflow" in joined_path:
+        scores["service"] += 6
+
+    # Domain models & schemas.
+    if _contains_keyword(path_parts, _MODEL_KEYWORDS) or _has_suffix(name_tokens, _MODEL_SUFFIXES):
+        scores["model"] += 10
+
+    # Data pipelines & retrieval orchestration.
+    if _contains_keyword(path_parts, _PIPELINE_KEYWORDS):
+        scores["data_pipeline"] += 6
+
+    # Integration boundaries.
+    if _contains_keyword(path_parts, _INTEGRATION_KEYWORDS) or _has_suffix(name_tokens, _INTEGRATION_SUFFIXES):
+        scores["integration"] += 9
+
+    # SDK / client surfaces.
+    if path_parts[0] == "sdk":
+        scores["sdk"] += 10
+    if _contains_keyword(path_parts, _SDK_KEYWORDS) or _has_suffix(name_tokens, _SDK_SUFFIXES):
+        scores["sdk"] += 8
+
+    # Sandbox and script directories are largely supportive.
+    if path_parts[0] in {"sandbox", "scripts"}:
+        scores["utility"] += 6
+
+    category, _ = max(
+        scores.items(),
+        key=lambda item: (item[1], _CATEGORY_PRIORITY.get(item[0], 0)),
+    )
+    return category
+
+
 def build_call_graph(profiles: Sequence[Profile]) -> CallGraph:
     """Construct a directed call graph based on extracted profiles."""
     graph = nx.DiGraph()
@@ -45,6 +426,7 @@ def build_call_graph(profiles: Sequence[Profile]) -> CallGraph:
             file_path=profile.file_path,
             function_name=profile.function_name,
             class_name=profile.class_name,
+            category=_profile_category(profile),
             label=_profile_label(profile),
         )
 
@@ -74,6 +456,7 @@ def build_call_graph(profiles: Sequence[Profile]) -> CallGraph:
                     graph.add_node(
                         external_node,
                         kind="external_call",
+                        category="external",
                         label=call,
                     )
                 graph.add_edge(
