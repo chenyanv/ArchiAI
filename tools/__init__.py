@@ -4,6 +4,10 @@ from .call_graph_pagerank import (  # noqa: F401
     build_call_graph_pagerank_tool,
     call_graph_pagerank_tool,
 )
+from .list_core_models import (  # noqa: F401
+    build_list_core_models_tool,
+    list_core_models,
+)
 from .list_entry_points import (  # noqa: F401
     build_list_entry_point_tool,
     list_entry_point_tool,
@@ -14,4 +18,6 @@ __all__ = [
     "call_graph_pagerank_tool",
     "build_list_entry_point_tool",
     "list_entry_point_tool",
+    "build_list_core_models_tool",
+    "list_core_models",
 ]
