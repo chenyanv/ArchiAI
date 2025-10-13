@@ -5,6 +5,8 @@ from pathlib import Path
 from collections import defaultdict
 from typing import Any, Dict, Iterable, List
 
+from celery import group
+
 from celery.utils.log import get_task_logger
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
@@ -33,7 +35,7 @@ def list_directories_for_summary(
     database_url: str | None = None,
     root_path: str | None = None,
 ) -> Dict[str, List[str]]:
-    """Return mapping of root_path -> directories that have file-level summaries."""
+    """Return mapping of root_path -> directories ordered deepest-first."""
 
     session = create_session(database_url)
     try:
@@ -47,11 +49,17 @@ def list_directories_for_summary(
             level_1 = summaries.get("level_1")
             if not isinstance(level_1, dict):
                 continue
-
             directory = _normalise_directory(record.file_path or "")
-            directories[record.root_path or ""].add(directory)
+            for ancestor in _directory_ancestors(directory):
+                directories[record.root_path or ""].add(ancestor)
 
-        return {root: sorted(paths) for root, paths in directories.items()}
+        ordered: dict[str, List[str]] = {}
+        for root, paths in directories.items():
+            ordered[root] = sorted(
+                paths,
+                key=lambda item: (-_directory_level(item), item),
+            )
+        return ordered
     finally:
         session.close()
 
@@ -69,11 +77,18 @@ def summarize_directory(
         try:
             context = build_directory_context(session, directory_path, root_path=root_path)
         except ValueError:
-            logger.info("Skipping directory %s (no eligible file summaries)", directory_path)
+            logger.info("Skipping directory %s (no eligible context)", directory_path)
             return None
 
         summary_payload = request_directory_summary(context)
-        record = _persist_directory_summary(session, context.root_path, context.directory_path, summary_payload, context.files)
+        record = _persist_directory_summary(
+            session,
+            context.root_path,
+            context.directory_path,
+            summary_payload,
+            context.files,
+            context.child_directories,
+        )
         session.commit()
 
         return {
@@ -132,12 +147,29 @@ def dispatch_directory_summary_tasks(
     total = 0
 
     for group_root, paths in directories.items():
+        depth_buckets: dict[int, list[str]] = defaultdict(list)
         for directory in paths:
-            generate_directory_summary.apply_async(
-                args=(directory,),
-                kwargs={"root_path": group_root, "database_url": database_url},
-            )
-            total += 1
+            depth_buckets[_directory_level(directory)].append(directory)
+
+        signature = None
+        for depth in sorted(depth_buckets.keys(), reverse=True):
+            depth_paths = depth_buckets[depth]
+            if not depth_paths:
+                continue
+            group_tasks = [
+                generate_directory_summary.s(
+                    directory,
+                    root_path=group_root,
+                    database_url=database_url,
+                )
+                for directory in depth_paths
+            ]
+            depth_group = group(group_tasks)
+            signature = depth_group if signature is None else signature | depth_group
+            total += len(depth_paths)
+
+        if signature is not None:
+            signature.apply_async()
 
     return total
 
@@ -148,8 +180,26 @@ def _persist_directory_summary(
     directory_path: str,
     summary_payload: Dict[str, Any],
     files: Iterable,
+    child_directories: Iterable,
 ) -> DirectorySummaryRecord:
-    file_list = [getattr(file, "file_path", str(file)) for file in files]
+    aggregated_files: set[str] = set()
+
+    for file in files:
+        path = getattr(file, "file_path", None)
+        if isinstance(path, str) and path:
+            aggregated_files.add(path)
+        elif isinstance(file, str) and file:
+            aggregated_files.add(file)
+
+    for child in child_directories:
+        source_files = getattr(child, "source_files", None)
+        if not source_files:
+            continue
+        for child_path in source_files:
+            if isinstance(child_path, str) and child_path:
+                aggregated_files.add(child_path)
+
+    file_list = sorted(aggregated_files)
 
     record = (
         session.query(DirectorySummaryRecord)
@@ -181,6 +231,26 @@ def _normalise_directory(file_path: str) -> str:
     path = Path(cleaned)
     parent = path.parent.as_posix()
     return parent if parent and parent != "." else "."
+
+
+def _directory_level(directory_path: str) -> int:
+    if not directory_path or directory_path in {".", "./"}:
+        return 0
+    return len([segment for segment in directory_path.strip("/").split("/") if segment and segment != "."])
+
+
+def _directory_ancestors(directory_path: str) -> List[str]:
+    normalised = directory_path.strip() or "."
+    if normalised in {".", "./"}:
+        return ["."]
+
+    segments = [segment for segment in normalised.strip("/").split("/") if segment and segment != "."]
+    ancestors: List[str] = []
+    for idx in range(len(segments), 0, -1):
+        ancestor = "/".join(segments[:idx])
+        ancestors.append(ancestor)
+    ancestors.append(".")
+    return ancestors
 
 
 __all__ = [

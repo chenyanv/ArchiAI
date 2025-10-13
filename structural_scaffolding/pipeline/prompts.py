@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import List
 
 from .context import (
+    DirectoryChildSummary,
     DirectorySummaryContext,
     EntryPointCandidateSnippet,
     L1SummaryContext,
@@ -69,27 +70,35 @@ def build_l1_messages(context: L1SummaryContext) -> List[dict[str, str]]:
 def build_directory_messages(context: DirectorySummaryContext) -> List[dict[str, str]]:
     instruction = (
         "You are a principal software architect reviewing a directory of source files. "
-        "Your task is to analyse the provided file-level summaries and produce an aggregated "
-        "directory overview. Respond strictly with a JSON object that matches this schema:\n"
-        '{"directory":"","overview":"","key_capabilities":[],"notable_entry_points":[],"dependencies":[],"follow_up":[]}'
+        "Your task is to analyse the provided file-level summaries and existing child-directory summaries, "
+        "building a bottom-up narrative. Respond strictly with a JSON object that matches this schema:\n"
+        '{"directory":"","level":0,"overview":"","business_logic_reasoning":"","inputs":[],"outputs":[],"module_interactions":[],"key_capabilities":[],"notable_entry_points":[],"dependencies":[],"follow_up":[]}'
         "\nFill every field using only evidence from the context. "
-        "overview should be a concise paragraph (<=3 sentences). "
+        "overview should be a concise paragraph (<=3 sentences) aimed at senior engineers. "
+        "business_logic_reasoning must explain how this directory contributes to the wider system and why its responsibilities matter. "
+        "inputs and outputs should approximate the key data exchanged by this directory (use empty arrays when evidence is missing). "
+        "module_interactions should enumerate collaborating modules, packages, or external systems; reuse dependency names when appropriate. "
         "key_capabilities should list the most important responsibilities in priority order. "
-        "notable_entry_points should list file names or callables that initiate workflows (if none, leave the array empty). "
-        "dependencies should capture external systems, services, or important collaborators. "
+        "notable_entry_points should list file names or callables that initiate workflows (leave empty when unclear). "
+        "dependencies should capture important collaborators or external services. "
         "follow_up should contain open questions or gaps for further investigation. "
         "Do not invent facts or add extra keys. Use 'Unknown' when evidence is missing."
     )
 
     file_section = _format_directory_files(context.files)
+    child_section = _format_child_directories(context.child_directories)
     root_path = context.root_path or "(unspecified)"
 
     user_content = (
         f"Root path: {root_path}\n"
         f"Directory: {context.directory_path}\n"
-        f"File count: {len(context.files)}\n"
-        "\n=== File Summaries ===\n"
-        f"{file_section}"
+        f"Directory level: {context.level}\n"
+        f"Direct file count: {len(context.files)}\n"
+        f"Child directory count: {len(context.child_directories)}\n"
+        "\n=== Direct File Summaries ===\n"
+        f"{file_section}\n"
+        "\n=== Child Directory Summaries ===\n"
+        f"{child_section}"
     )
 
     return [
@@ -166,7 +175,7 @@ def _format_entry_point_candidates(candidates: List[EntryPointCandidateSnippet])
 
 def _format_directory_files(files: List["DirectoryFileSummary"]) -> str:
     if not files:
-        return "(no files with L1 summaries)"
+        return "(no direct files with L1 summaries)"
 
     lines: List[str] = []
     for idx, file_summary in enumerate(files, start=1):
@@ -177,8 +186,12 @@ def _format_directory_files(files: List["DirectoryFileSummary"]) -> str:
         core_identity = summary.get("core_identity") or summary.get("business_intent") or "Unknown"
         business_intent = summary.get("business_intent", "Unknown")
         data_flow = summary.get("data_flow") or {}
-        inputs = ", ".join(data_flow.get("inputs", [])) if isinstance(data_flow, dict) else "Unknown"
-        outputs = ", ".join(data_flow.get("outputs", [])) if isinstance(data_flow, dict) else "Unknown"
+        if isinstance(data_flow, dict):
+            inputs = ", ".join(item for item in data_flow.get("inputs", []) if isinstance(item, str))
+            outputs = ", ".join(item for item in data_flow.get("outputs", []) if isinstance(item, str))
+        else:
+            inputs = ""
+            outputs = ""
         hints_role = workflow_hints.get("role", "Unknown") if isinstance(workflow_hints, dict) else "Unknown"
         entry_id = entry_point.get("profile_id", "None") if isinstance(entry_point, dict) else "None"
 
@@ -191,6 +204,48 @@ def _format_directory_files(files: List["DirectoryFileSummary"]) -> str:
                 f"   Data outputs: {outputs or 'Unknown'}\n"
                 f"   Workflow role: {hints_role}\n"
                 f"   Suggested entry point: {entry_id}"
+            )
+        )
+
+    return "\n".join(lines)
+
+
+def _format_child_directories(children: List["DirectoryChildSummary"]) -> str:
+    if not children:
+        return "(no child directories summarised yet)"
+
+    lines: List[str] = []
+    for idx, child in enumerate(children, start=1):
+        summary = child.summary or {}
+        business_logic = summary.get("business_logic_reasoning") or summary.get("overview") or "Unknown"
+
+        inputs_field = summary.get("inputs")
+        if isinstance(inputs_field, list):
+            inputs = ", ".join(item for item in inputs_field if isinstance(item, str) and item.strip())
+        else:
+            inputs = ""
+
+        outputs_field = summary.get("outputs")
+        if isinstance(outputs_field, list):
+            outputs = ", ".join(item for item in outputs_field if isinstance(item, str) and item.strip())
+        else:
+            outputs = ""
+
+        interactions_field = summary.get("module_interactions") or summary.get("dependencies")
+        if isinstance(interactions_field, list):
+            interactions = ", ".join(
+                item for item in interactions_field if isinstance(item, str) and item.strip()
+            )
+        else:
+            interactions = ""
+
+        lines.append(
+            (
+                f"{idx}. Directory: {child.directory_path} (level {child.level}, files={child.file_count})\n"
+                f"   Business logic: {business_logic or 'Unknown'}\n"
+                f"   Inputs: {inputs or 'Unknown'}\n"
+                f"   Outputs: {outputs or 'Unknown'}\n"
+                f"   Module interactions: {interactions or 'Unknown'}"
             )
         )
 

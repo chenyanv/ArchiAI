@@ -59,10 +59,21 @@ class DirectoryFileSummary:
 
 
 @dataclass(slots=True)
+class DirectoryChildSummary:
+    directory_path: str
+    level: int
+    file_count: int
+    summary: dict
+    source_files: List[str]
+
+
+@dataclass(slots=True)
 class DirectorySummaryContext:
     root_path: str
     directory_path: str
+    level: int
     files: List[DirectoryFileSummary]
+    child_directories: List[DirectoryChildSummary]
 
 
 def build_l1_context(session: Session, profile: ProfileRecord) -> L1SummaryContext:
@@ -227,6 +238,7 @@ def build_directory_context(
     root_path: Optional[str] = None,
 ) -> DirectorySummaryContext:
     target_directory = _normalise_directory_path(directory_path)
+    target_level = _directory_level(target_directory)
 
     stmt = session.query(ProfileRecord).filter(ProfileRecord.kind == "file")
     if root_path is not None:
@@ -239,7 +251,7 @@ def build_directory_context(
         file_path = (record.file_path or "").replace("\\", "/")
         if not file_path:
             continue
-        if not _file_in_directory(file_path, target_directory):
+        if _parent_directory(file_path) != target_directory:
             continue
 
         summaries = record.summaries if isinstance(record.summaries, dict) else {}
@@ -269,13 +281,44 @@ def build_directory_context(
         if resolved_root is None:
             resolved_root = record.root_path
 
-    if not files:
-        raise ValueError(f"No file-level summaries found for directory '{directory_path}'")
+    # Eagerly load child directory summaries so higher-level folders can build on
+    # previously generated context.
+    from structural_scaffolding.database import DirectorySummaryRecord  # local import to avoid cycles
+
+    child_query = session.query(DirectorySummaryRecord)
+    if root_path is not None:
+        child_query = child_query.filter(DirectorySummaryRecord.root_path == root_path)
+
+    child_directories: List[DirectoryChildSummary] = []
+    for record in child_query:
+        if resolved_root is not None and record.root_path != resolved_root:
+            continue
+        directory = _normalise_directory_path(record.directory_path or "")
+        if directory == target_directory:
+            continue
+        if not _is_direct_child(directory, target_directory):
+            continue
+        if resolved_root is None:
+            resolved_root = record.root_path
+        child_directories.append(
+            DirectoryChildSummary(
+                directory_path=directory,
+                level=_directory_level(directory),
+                file_count=int(record.file_count or 0),
+                summary=record.summary if isinstance(record.summary, dict) else {},
+                source_files=list(record.source_files or []),
+            )
+        )
+
+    if not files and not child_directories:
+        raise ValueError(f"No context found for directory '{directory_path}'")
 
     return DirectorySummaryContext(
         root_path=resolved_root or "",
         directory_path=target_directory,
+        level=target_level,
         files=files,
+        child_directories=sorted(child_directories, key=lambda item: item.directory_path),
     )
 
 
@@ -326,16 +369,33 @@ def _normalise_directory_path(directory_path: str) -> str:
     return normalised or "."
 
 
-def _file_in_directory(file_path: str, directory_path: str) -> bool:
-    if directory_path == ".":
-        return True
-    if file_path == directory_path:
-        return True
-    return file_path.startswith(f"{directory_path}/")
+def _split_directory_path(directory_path: str) -> List[str]:
+    if not directory_path or directory_path in {".", "./"}:
+        return []
+    return [segment for segment in directory_path.strip("/").split("/") if segment and segment != "."]
+
+
+def _directory_level(directory_path: str) -> int:
+    return len(_split_directory_path(directory_path))
+
+
+def _parent_directory(path: str) -> str:
+    segments = _split_directory_path(path)
+    if not segments:
+        return "."
+    parent_segments = segments[:-1]
+    if not parent_segments:
+        return "."
+    return "/".join(parent_segments)
+
+
+def _is_direct_child(child: str, parent: str) -> bool:
+    return _parent_directory(child) == parent
 
 
 __all__ = [
     "DirectoryFileSummary",
+    "DirectoryChildSummary",
     "DirectorySummaryContext",
     "EntryPointCandidateSnippet",
     "L1SummaryContext",

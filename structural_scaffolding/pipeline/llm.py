@@ -397,38 +397,44 @@ def _normalise_directory_payload(payload: Dict[str, Any], *, directory: str) -> 
     overview = payload.get("overview")
     if not isinstance(overview, str) or not overview.strip():
         overview = "Overview unavailable."
-
-    key_capabilities = payload.get("key_capabilities")
-    if not isinstance(key_capabilities, list):
-        key_capabilities = []
     else:
-        key_capabilities = [str(item).strip() for item in key_capabilities if str(item).strip()]
+        overview = overview.strip()
 
-    notable_entry_points = payload.get("notable_entry_points")
-    if not isinstance(notable_entry_points, list):
-        notable_entry_points = []
-    else:
-        notable_entry_points = [str(item).strip() for item in notable_entry_points if str(item).strip()]
+    business_logic = payload.get("business_logic_reasoning")
+    if not isinstance(business_logic, str) or not business_logic.strip():
+        business_logic = overview
 
-    dependencies = payload.get("dependencies")
-    if not isinstance(dependencies, list):
-        dependencies = []
-    else:
-        dependencies = [str(item).strip() for item in dependencies if str(item).strip()]
+    inputs = _string_list(payload.get("inputs"))
+    outputs = _string_list(payload.get("outputs"))
+    module_interactions = _string_list(payload.get("module_interactions"))
 
-    follow_up = payload.get("follow_up")
-    if not isinstance(follow_up, list):
-        follow_up = []
-    else:
-        follow_up = [str(item).strip() for item in follow_up if str(item).strip()]
+    key_capabilities = _string_list(payload.get("key_capabilities"))
+    notable_entry_points = _string_list(payload.get("notable_entry_points"))
+
+    dependencies = _string_list(payload.get("dependencies"))
+    follow_up = _string_list(payload.get("follow_up"))
 
     directory_name = payload.get("directory")
     if not isinstance(directory_name, str) or not directory_name.strip():
         directory_name = directory
+    else:
+        directory_name = directory_name.strip()
+
+    level_value = payload.get("level")
+    level = _normalise_directory_level(level_value, directory_name)
+
+    # Provide fallbacks so legacy schemas remain compatible.
+    if not module_interactions and dependencies:
+        module_interactions = list(dependencies)
 
     return {
         "directory": directory_name,
-        "overview": overview.strip(),
+        "level": level,
+        "overview": overview,
+        "business_logic_reasoning": business_logic.strip(),
+        "inputs": inputs,
+        "outputs": outputs,
+        "module_interactions": module_interactions,
         "key_capabilities": key_capabilities,
         "notable_entry_points": notable_entry_points,
         "dependencies": dependencies,
@@ -446,6 +452,44 @@ def _normalise_confidence_label(value: Any) -> str:
     if label in {"HIGH", "MEDIUM", "LOW"}:
         return label
     return "MEDIUM"
+
+
+def _string_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        normalised: list[str] = []
+        for item in value:
+            if isinstance(item, str):
+                text = item.strip()
+                if text:
+                    normalised.append(text)
+            elif item is not None:
+                text = str(item).strip()
+                if text:
+                    normalised.append(text)
+        return normalised
+    if isinstance(value, str):
+        text = value.strip()
+        return [text] if text else []
+    if value is not None:
+        text = str(value).strip()
+        return [text] if text else []
+    return []
+
+
+def _normalise_directory_level(value: Any, directory: str) -> int:
+    try:
+        level = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        level = _infer_directory_level(directory)
+    return max(level, 0)
+
+
+def _infer_directory_level(directory: str) -> int:
+    path = directory or "."
+    if path in {".", "./"}:
+        return 0
+    segments = [segment for segment in path.strip("/").split("/") if segment and segment != "."]
+    return len(segments)
 
 
 __all__ = [

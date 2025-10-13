@@ -4,6 +4,7 @@ from .database import DEFAULT_DATABASE_URL, persist_profiles, resolve_database_u
 from .extractor import ProfileExtractor, profiles_to_json
 from .models import Profile, SummaryLevel
 from .parsing import TreeSitterDependencyError
+from .graphs import CallGraph, build_call_graph
 
 __all__ = [
     "Profile",
@@ -14,4 +15,6 @@ __all__ = [
     "resolve_database_url",
     "TreeSitterDependencyError",
     "profiles_to_json",
+    "CallGraph",
+    "build_call_graph",
 ]

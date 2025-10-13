@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -10,7 +11,10 @@ from .extractor import ProfileExtractor, TreeSitterDependencyError
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Build structural profiles for functions, methods, and classes using Tree-sitter.",
+        description=(
+            "Build structural profiles for functions, methods, and classes using Tree-sitter, "
+            "and emit a NetworkX-backed call graph."
+        ),
     )
     parser.add_argument(
         "--root",
@@ -32,6 +36,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "SQLAlchemy database URL. Defaults to environment variable "
             "STRUCTURAL_SCAFFOLD_DB_URL or"
             f" {DEFAULT_DATABASE_URL}."
+        ),
+    )
+    parser.add_argument(
+        "--graph-root",
+        type=Path,
+        default=None,
+        help=(
+            "Base directory where call graph artifacts should be written. "
+            "Defaults to the current working directory."
         ),
     )
     return parser.parse_args(argv)
@@ -59,6 +72,23 @@ def run(argv: list[str] | None = None) -> int:
 
     print(f"Stored {stored} profiles into {database_url}")
 
+    call_graph = extractor.call_graph
+    if call_graph is not None:
+        graph_root = args.graph_root or Path.cwd()
+        graph_dir = graph_root / "results" / "graphs"
+        graph_dir.mkdir(parents=True, exist_ok=True)
+        graph_path = graph_dir / "call_graph.json"
+        payload = {
+            "nodes": [
+                {"id": node_id, **data}
+                for node_id, data in call_graph.graph.nodes(data=True)
+            ],
+            "edges": call_graph.to_edge_index(),
+            "unresolved_calls": sorted(call_graph.unresolved_calls),
+        }
+        graph_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"Wrote call graph to {graph_path}")
+
     return 0
 
 
@@ -67,3 +97,7 @@ def main() -> None:
 
 
 __all__ = ["parse_args", "run", "main"]
+
+
+if __name__ == "__main__":
+    main()

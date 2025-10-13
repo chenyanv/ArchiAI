@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 from typing import Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
 
+from structural_scaffolding.graphs import CallGraph, build_call_graph
 from structural_scaffolding.handlers.base import BaseLanguageHandler
 from structural_scaffolding.handlers.python_handler import PythonHandler
 from structural_scaffolding.models import Profile
@@ -12,7 +13,11 @@ from structural_scaffolding.parsing import TreeSitterDependencyError
 
 
 class ProfileExtractor:
-    """Walks a repository and extracts structural profiles."""
+    """Walks a repository and extracts structural profiles.
+
+    After :meth:`extract` completes, :attr:`call_graph` contains a NetworkX-backed
+    call graph describing the intra-repository call relationships.
+    """
 
     DEFAULT_IGNORED_DIRS = {".git", "__pycache__", "node_modules", ".venv", "venv", "build", "dist"}
 
@@ -26,6 +31,7 @@ class ProfileExtractor:
         self.handlers = tuple(language_handlers or (PythonHandler(),))
         self.ignored_dirs = set(ignored_dirs or self.DEFAULT_IGNORED_DIRS)
         self._extension_map = self._build_extension_map(self.handlers)
+        self.call_graph: CallGraph | None = None
 
     @staticmethod
     def _build_extension_map(handlers: Sequence[BaseLanguageHandler]) -> Dict[str, BaseLanguageHandler]:
@@ -42,6 +48,7 @@ class ProfileExtractor:
             if handler is None:
                 continue
             profiles.extend(handler.extract(path, relative))
+        self.call_graph = build_call_graph(profiles)
         return profiles
 
     def _iter_source_files(self) -> Iterator[Tuple[Path, Path]]:
