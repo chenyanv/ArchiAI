@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 
 def _format_json(value: Any) -> str:
@@ -10,19 +10,14 @@ def _format_json(value: Any) -> str:
 
 def build_meta_prompt(
     landmarks: Sequence[Mapping[str, Any]],
-    entry_points: Sequence[Mapping[str, Any] | str],
+    entry_point_summary: str,
+    entry_point_total: int,
     core_model_summary: str,
     core_model_total: int,
 ) -> str:
     """
     Compose the meta prompt that drives the orchestration agent's reasoning step.
     """
-    entry_payload: Iterable[Any]
-    if entry_points and isinstance(entry_points[0], str):
-        entry_payload = entry_points
-    else:
-        entry_payload = entry_points
-
     prompt = f"""# ROLE
 You are a world-class Senior Systems Architect. Your speciality is translating raw static-analysis signals into actionable architecture briefings that can be handed directly to downstream agents—no conversational back-and-forth required.
 
@@ -37,10 +32,11 @@ Here are the most structurally important nodes in the code graph. This list may 
 {_format_json(list(landmarks))}
 ```
 
-## Report B: Business Entry Points (API Endpoints)
-Here are the known entry points where the system interacts with the outside world.
+## Report B: Business Entry Points (Condensed Summary)
+Total discovered entry points: {entry_point_total}
+Here is a condensed summary of the HTTP surface area and associated handlers.
 ```json
-{_format_json(list(entry_payload))}
+{entry_point_summary}
 ```
 
 ## Report C: Core Data Models (Condensed Summary)
