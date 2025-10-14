@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Optional, TypedDict
+from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Optional, Sequence, TypedDict
 
 from langgraph.graph import END, StateGraph
 
@@ -18,9 +18,83 @@ class OrchestrationState(TypedDict, total=False):
     landmarks: List[Mapping[str, Any]]
     entry_points: List[Mapping[str, Any]]
     core_models: List[Mapping[str, Any]]
+    core_model_summary: str
     llm_response: str
     plan: Dict[str, Any]
     result: Dict[str, Any]
+
+
+def _normalise_json_text(payload: Mapping[str, Any] | List[Any]) -> str:
+    return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+def _core_model_fallback(core_models: Sequence[Mapping[str, Any]]) -> str:
+    names: List[str] = []
+    for model in core_models:
+        name = (
+            model.get("model_name")
+            or model.get("name")
+            or model.get("qualified_name")
+        )
+        if not name or name in names:
+            continue
+        names.append(str(name))
+
+    top_models = names[:7]
+    supporting = names[7:12]
+    payload: Dict[str, Any] = {
+        "top_models": top_models,
+        "model_relationships": [],
+    }
+    if supporting:
+        payload["supporting_models"] = supporting
+    payload["notes"] = [
+        "LLM summarisation unavailable; listing unique model identifiers."
+    ]
+    return _normalise_json_text(payload)
+
+
+def _summarise_core_models(core_models: Sequence[Mapping[str, Any]]) -> str:
+    if not core_models:
+        empty_payload = {
+            "top_models": [],
+            "model_relationships": [],
+            "supporting_models": [],
+            "notes": ["No database models were detected."],
+        }
+        return _normalise_json_text(empty_payload)
+
+    raw_models = json.dumps(core_models, ensure_ascii=False)
+    summary_prompt = (
+        "You are condensing database model inventory for an orchestration agent. "
+        "Given the JSON list of models below, produce a concise JSON summary with "
+        "the fields: top_models (<=7 strings), model_relationships (<=3 short "
+        "sentences describing how the models interact), supporting_models (<=5 "
+        "additional identifiers), and notes (optional short clarifications). "
+        "Use exact identifiers from the input. Use [] when you have no evidence. "
+        "Keep each sentence under 25 words.\n\n"
+        "Input models JSON:\n"
+        f"```json\n{raw_models}\n```"
+    )
+
+    try:
+        response = invoke_chatgpt(
+            summary_prompt,
+            temperature=0.0,
+            max_output_tokens=512,
+        )
+    except ChatGPTResponseError:
+        return _core_model_fallback(core_models)
+
+    for candidate in _iter_json_candidates(response):
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, (MutableMapping, list)):
+            return _normalise_json_text(parsed)  # type: ignore[arg-type]
+
+    return _core_model_fallback(core_models)
 
 
 def _gather_intelligence(_: OrchestrationState) -> OrchestrationState:
@@ -37,15 +111,33 @@ def _gather_intelligence(_: OrchestrationState) -> OrchestrationState:
     }
 
 
+def _preprocess_intelligence(state: OrchestrationState) -> OrchestrationState:
+    """
+    Compress bulky intelligence (e.g. core models) before the main reasoning step.
+    """
+    core_models: Sequence[Mapping[str, Any]] = state.get("core_models", []) or []
+    summary = _summarise_core_models(core_models)
+    return {"core_model_summary": summary}
+
+
 def _fuse_intelligence(state: OrchestrationState) -> OrchestrationState:
     """
     Feed the gathered intelligence to ChatGPT for high-level synthesis.
     """
+    core_models: Sequence[Mapping[str, Any]] = state.get("core_models", []) or []
+    core_summary = state.get("core_model_summary")
+    if not isinstance(core_summary, str) or not core_summary.strip():
+        core_summary = _summarise_core_models(core_models)
+
     prompt = build_meta_prompt(
         state.get("landmarks", []),
         state.get("entry_points", []),
-        state.get("core_models", []),
+        core_summary,
+        len(core_models),
     )
+    print("=== ORCHESTRATION PROMPT BEGIN ===")
+    print(prompt)
+    print("=== ORCHESTRATION PROMPT END ===")
     try:
         raw_response = invoke_chatgpt(
             prompt,
@@ -77,8 +169,11 @@ def _finalise(state: OrchestrationState) -> OrchestrationState:
     if plan is None:
         # When parsing fails, surface the raw response for manual handling.
         plan = {
-            "business_logic_summary": "",
-            "key_domains": [],
+            "system_overview": {
+                "headline": "",
+                "key_workflows": [],
+            },
+            "component_cards": [],
             "deprioritised_signals": [],
             "raw_response": state.get("llm_response"),
         }
@@ -128,8 +223,11 @@ def _iter_json_candidates(response_text: str) -> Iterable[str]:
 def _fallback_plan(state: OrchestrationState, error: ChatGPTResponseError) -> Dict[str, Any]:
     metadata = getattr(error, "metadata", None)
     return {
-        "business_logic_summary": "",
-        "key_domains": [],
+        "system_overview": {
+            "headline": "",
+            "key_workflows": [],
+        },
+        "component_cards": [],
         "deprioritised_signals": [],
         "error": {
             "type": error.__class__.__name__,
@@ -148,11 +246,13 @@ def build_orchestration_agent() -> StateGraph:
     """
     workflow = StateGraph(OrchestrationState)
     workflow.add_node("gather_intelligence", _gather_intelligence)
+    workflow.add_node("preprocess_intelligence", _preprocess_intelligence)
     workflow.add_node("intelligence_fusion", _fuse_intelligence)
     workflow.add_node("finalise", _finalise)
 
     workflow.set_entry_point("gather_intelligence")
-    workflow.add_edge("gather_intelligence", "intelligence_fusion")
+    workflow.add_edge("gather_intelligence", "preprocess_intelligence")
+    workflow.add_edge("preprocess_intelligence", "intelligence_fusion")
     workflow.add_edge("intelligence_fusion", "finalise")
     workflow.add_edge("finalise", END)
 

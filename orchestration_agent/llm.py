@@ -6,7 +6,7 @@ from typing import Any, Dict, Optional
 
 from openai import OpenAI
 
-DEFAULT_MODEL = "gpt-4o-mini"
+DEFAULT_MODEL = "gpt-4o"
 MODEL_ENV_VAR = "ORCHESTRATION_OPENAI_MODEL"
 API_KEY_ENV_PREFERENCE = (
     "ORCHESTRATION_OPENAI_API_KEY",
