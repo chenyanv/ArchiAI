@@ -1,0 +1,260 @@
+"""
+LangGraph tool for returning the inbound and outbound call context of a node.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from functools import lru_cache
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Mapping, Set
+
+import networkx as nx
+from pydantic import BaseModel, Field
+
+from load_graph import DEFAULT_EDGE_WEIGHT, load_graph_from_json
+
+DEFAULT_GRAPH_PATH = Path("results/graphs/call_graph.json")
+
+
+@lru_cache(maxsize=1)
+def _load_cached_graph(path: str) -> nx.DiGraph:
+    """Load and cache the call graph to avoid repeated disk I/O."""
+    return load_graph_from_json(path)
+
+
+def _normalise_category(node_attrs: Mapping[str, Any]) -> str:
+    category = node_attrs.get("category") or node_attrs.get("kind")
+    if isinstance(category, str) and category:
+        return category
+    return "unknown"
+
+
+def _extract_weight(edge_attrs: Mapping[str, Any]) -> float:
+    raw = edge_attrs.get("weight", DEFAULT_EDGE_WEIGHT)
+    try:
+        weight = float(raw)
+    except (TypeError, ValueError):
+        weight = float(DEFAULT_EDGE_WEIGHT)
+    if weight < 0.0:
+        return 0.0
+    return weight
+
+
+def _build_neighbor_payload(
+    *,
+    graph: nx.DiGraph,
+    neighbor: str,
+    weight: float,
+    via: Iterable[str] | None = None,
+) -> Dict[str, Any]:
+    node_attrs = graph.nodes[neighbor]
+    payload = {
+        "id": neighbor,
+        "label": node_attrs.get("label"),
+        "kind": node_attrs.get("kind"),
+        "category": _normalise_category(node_attrs),
+        "file_path": node_attrs.get("file_path"),
+        "weight": weight,
+    }
+    via_nodes = sorted(set(via)) if via else []
+    if via_nodes:
+        payload["via"] = via_nodes
+    return payload
+
+
+class GetCallGraphContextInput(BaseModel):
+    node_id: str = Field(
+        ...,
+        min_length=1,
+        description="Identifier of the call graph node to inspect.",
+    )
+
+
+@dataclass(frozen=True)
+class GetCallGraphContextTool:
+    """
+    Surface the inbound and outbound call relationships for a call graph node.
+    """
+
+    graph_path: Path
+    name: str = "get_call_graph_context"
+    description: str = (
+        "Return the call graph context for a node, including the downstream calls "
+        "it makes and the upstream callers that reference it."
+    )
+    args_schema = GetCallGraphContextInput
+
+    def __post_init__(self) -> None:
+        resolved = self.graph_path.expanduser().resolve()
+        object.__setattr__(self, "graph_path", resolved)
+
+    def _iter_file_members(self, graph: nx.DiGraph, file_path: str) -> Iterable[str]:
+        for node, attrs in graph.nodes(data=True):
+            if attrs.get("file_path") != file_path:
+                continue
+            if attrs.get("kind") == "file":
+                continue
+            yield node
+
+    def _aggregate_file_neighbors(
+        self,
+        graph: nx.DiGraph,
+        *,
+        file_path: str,
+        direction: str,
+    ) -> List[Dict[str, Any]]:
+        if not file_path:
+            return []
+
+        accumulator: Dict[str, Dict[str, Any]] = {}
+
+        for member in self._iter_file_members(graph, file_path):
+            if direction == "outgoing":
+                iterator = graph.successors(member)
+                edge_lookup = lambda neighbor: graph.get_edge_data(member, neighbor, {})
+            else:
+                iterator = graph.predecessors(member)
+                edge_lookup = lambda neighbor: graph.get_edge_data(neighbor, member, {})
+
+            for neighbor in iterator:
+                edge_attrs = edge_lookup(neighbor)
+                weight = _extract_weight(edge_attrs)
+                if weight < 0.0:
+                    continue
+                payload = accumulator.setdefault(
+                    neighbor,
+                    {"weight": 0.0, "via": set()},
+                )
+                payload["weight"] += weight
+                payload["via"].add(member)
+
+        results: List[Dict[str, Any]] = []
+        for neighbor, aggregated in accumulator.items():
+            via_nodes: Set[str] = aggregated["via"]
+            entry = _build_neighbor_payload(
+                graph=graph,
+                neighbor=neighbor,
+                weight=aggregated["weight"],
+                via=via_nodes,
+            )
+            results.append(entry)
+
+        return sorted(
+            results,
+            key=lambda entry: (entry.get("weight", 0.0), entry["id"]),
+            reverse=True,
+        )
+
+    def _collect_calls(self, graph: nx.DiGraph, node_id: str) -> List[Dict[str, Any]]:
+        downstream: List[Dict[str, Any]] = []
+        for neighbor in graph.successors(node_id):
+            edge_attrs = graph.get_edge_data(node_id, neighbor, {})
+            weight = _extract_weight(edge_attrs)
+            downstream.append(
+                _build_neighbor_payload(
+                    graph=graph,
+                    neighbor=neighbor,
+                    weight=weight,
+                    via=None,
+                )
+            )
+
+        if downstream:
+            return sorted(
+                downstream,
+                key=lambda entry: (entry.get("weight", 0.0), entry["id"]),
+                reverse=True,
+            )
+
+        node_attrs = graph.nodes[node_id]
+        if node_attrs.get("kind") != "file":
+            return []
+
+        file_path = node_attrs.get("file_path")
+        return self._aggregate_file_neighbors(
+            graph,
+            file_path=file_path,
+            direction="outgoing",
+        )
+
+    def _collect_callers(self, graph: nx.DiGraph, node_id: str) -> List[Dict[str, Any]]:
+        upstream: List[Dict[str, Any]] = []
+        for neighbor in graph.predecessors(node_id):
+            edge_attrs = graph.get_edge_data(neighbor, node_id, {})
+            weight = _extract_weight(edge_attrs)
+            upstream.append(
+                _build_neighbor_payload(
+                    graph=graph,
+                    neighbor=neighbor,
+                    weight=weight,
+                    via=None,
+                )
+            )
+
+        if upstream:
+            return sorted(
+                upstream,
+                key=lambda entry: (entry.get("weight", 0.0), entry["id"]),
+                reverse=True,
+            )
+
+        node_attrs = graph.nodes[node_id]
+        if node_attrs.get("kind") != "file":
+            return []
+
+        file_path = node_attrs.get("file_path")
+        return self._aggregate_file_neighbors(
+            graph,
+            file_path=file_path,
+            direction="incoming",
+        )
+
+    def _run(self, node_id: str) -> Dict[str, Any]:
+        graph = _load_cached_graph(str(self.graph_path))
+        if node_id not in graph:
+            raise ValueError(f"Node '{node_id}' does not exist in the call graph.")
+
+        node_attrs = graph.nodes[node_id]
+        payload = {
+            "id": node_id,
+            "label": node_attrs.get("label"),
+            "kind": node_attrs.get("kind"),
+            "category": _normalise_category(node_attrs),
+            "file_path": node_attrs.get("file_path"),
+            "calls": self._collect_calls(graph, node_id),
+            "called_by": self._collect_callers(graph, node_id),
+        }
+        return payload
+
+    def invoke(self, payload: Mapping[str, Any]) -> Dict[str, Any]:
+        if isinstance(payload, GetCallGraphContextInput):
+            params = payload
+        elif isinstance(payload, Mapping):
+            params = self.args_schema(**payload)
+        else:
+            raise TypeError("Tool payload must be a mapping or GetCallGraphContextInput.")
+        return self._run(params.node_id)
+
+    def __call__(self, payload: Mapping[str, Any]) -> Dict[str, Any]:
+        return self.invoke(payload)
+
+
+def build_get_call_graph_context_tool(
+    graph_path: Path | str = DEFAULT_GRAPH_PATH,
+) -> GetCallGraphContextTool:
+    """
+    Create a LangGraph-compatible tool exposing inbound/outbound call context.
+    """
+    return GetCallGraphContextTool(Path(graph_path))
+
+
+get_call_graph_context_tool = build_get_call_graph_context_tool()
+
+
+__all__ = [
+    "GetCallGraphContextInput",
+    "GetCallGraphContextTool",
+    "build_get_call_graph_context_tool",
+    "get_call_graph_context_tool",
+]

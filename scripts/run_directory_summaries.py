@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 import sys
-from typing import Dict, List, Tuple
+from typing import List, Tuple
 
 from structural_scaffolding.pipeline.directory_tasks import (
     list_directories_for_summary,
@@ -31,17 +31,27 @@ def _parse_args(argv: List[str] | None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _directory_level(directory_path: str) -> int:
+    if not directory_path or directory_path in {".", "./"}:
+        return 0
+    return len([segment for segment in directory_path.strip("/").split("/") if segment and segment != "."])
+
+
 def _resolve_targets(args: argparse.Namespace) -> List[Tuple[str, str]]:
     if args.directories:
         root = args.root_path or ""
-        return [(root, directory) for directory in args.directories]
+        targets = [(root, directory) for directory in args.directories]
+    else:
+        mapping = list_directories_for_summary(database_url=args.database_url, root_path=args.root_path)
+        targets = []
+        for root_path, directories in mapping.items():
+            for directory in directories:
+                targets.append((root_path, directory))
 
-    mapping = list_directories_for_summary(database_url=args.database_url, root_path=args.root_path)
-    targets: List[Tuple[str, str]] = []
-    for root_path, directories in mapping.items():
-        for directory in directories:
-            targets.append((root_path, directory))
-    return sorted(targets, key=lambda item: (item[0], item[1]))
+    return sorted(
+        targets,
+        key=lambda item: (item[0], -_directory_level(item[1]), item[1]),
+    )
 
 
 def main(argv: List[str] | None = None) -> int:
@@ -66,7 +76,7 @@ def main(argv: List[str] | None = None) -> int:
             continue
 
         if result is None:
-            print("  -> skipped (no eligible file summaries).", flush=True)
+            print("  -> skipped (no eligible context).", flush=True)
         else:
             print(
                 f"  -> stored summary for {result['directory_path']} ({result['file_count']} files).",
