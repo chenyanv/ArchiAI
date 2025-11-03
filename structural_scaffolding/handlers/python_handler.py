@@ -68,6 +68,8 @@ class PythonProfileBuilder:
         node,
         parent_stack: Sequence[str],
         parent_id: str,
+        *,
+        decorated_node=None,
     ) -> Tuple[Profile, List[Profile]]:
         class_name = get_identifier(node, self._context.source_bytes, "name")
         class_stack = (*parent_stack, class_name)
@@ -84,7 +86,7 @@ class PythonProfileBuilder:
         class_profile = self._create_profile(
             profile_id=class_id,
             kind="class",
-            node=node,
+            node=decorated_node or node,
             parent_id=parent_id,
             class_name=".".join(class_stack),
             function_name=None,
@@ -101,6 +103,8 @@ class PythonProfileBuilder:
         node,
         class_stack: Sequence[str],
         parent_id: str,
+        *,
+        decorated_node=None,
     ) -> Profile:
         function_name = get_identifier(node, self._context.source_bytes, "name")
         class_name = ".".join(class_stack) if class_stack else None
@@ -117,7 +121,7 @@ class PythonProfileBuilder:
         return self._create_profile(
             profile_id=profile_id,
             kind="method" if class_stack else "function",
-            node=node,
+            node=decorated_node or node,
             parent_id=parent_id,
             class_name=class_name,
             function_name=function_name,
@@ -140,19 +144,30 @@ class PythonProfileBuilder:
         child_ids: List[str] = []
 
         for child in parent_node.named_children:
-            if child.type == "function_definition":
+            target = child
+            decorated_wrapper = None
+            if child.type == "decorated_definition":
+                definition = child.child_by_field_name("definition")
+                if definition is None:
+                    continue
+                target = definition
+                decorated_wrapper = child
+
+            if target.type in {"function_definition", "async_function_definition"}:
                 profile = self._build_function_profile(
-                    node=child,
+                    node=target,
                     class_stack=class_stack,
                     parent_id=parent_id,
+                    decorated_node=decorated_wrapper,
                 )
                 collected.append(profile)
                 child_ids.append(profile.id)
-            elif child.type == "class_definition":
+            elif target.type == "class_definition":
                 class_profile, nested = self._build_class_profile(
-                    node=child,
+                    node=target,
                     parent_stack=class_stack,
                     parent_id=parent_id,
+                    decorated_node=decorated_wrapper,
                 )
                 collected.append(class_profile)
                 child_ids.append(class_profile.id)

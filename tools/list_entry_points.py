@@ -60,6 +60,8 @@ class _DecoratorInfo:
 @dataclass(frozen=True)
 class _EntryPointRecord:
     call_graph_id: Optional[str]
+    class_name: Optional[str]
+    function_name: str
     symbol: str
     qualified_name: str
     file_path: str
@@ -259,6 +261,8 @@ def _extract_entry_points_from_node(
             doc_summary = _summarise_docstring(ast.get_docstring(node))
             yield _EntryPointRecord(
                 call_graph_id=str(cg_node.get("id")) if cg_node else None,
+                class_name=class_name,
+                function_name=node.name,
                 symbol=symbol_label,
                 qualified_name=qualified_name,
                 file_path=file_path,
@@ -491,11 +495,27 @@ def _filter_entry_points(
     return filtered
 
 
+def _resolve_entry_point_node_id(entry: _EntryPointRecord) -> str:
+    """
+    Prefer the structural graph identifier when available; otherwise synthesise
+    a stable node id so downstream consumers can still correlate the handler.
+    """
+    if entry.call_graph_id:
+        return str(entry.call_graph_id)
+
+    file_path = entry.file_path.replace("\\", "/").lstrip("./")
+    base = f"python::{file_path}"
+    if entry.class_name:
+        return f"{base}::{entry.class_name}::{entry.function_name}"
+    return f"{base}::{entry.function_name}"
+
+
 def _entry_point_to_payload(
     entry: _EntryPointRecord,
     *,
     include_docstring: bool,
 ) -> Dict[str, Any]:
+    node_id = _resolve_entry_point_node_id(entry)
     payload: Dict[str, Any] = {
         "symbol": entry.symbol,
         "qualified_name": entry.qualified_name,
@@ -505,10 +525,10 @@ def _entry_point_to_payload(
         "http_methods": list(entry.methods),
         "framework": entry.framework,
         "decorator": entry.decorator,
+        "node_id": node_id,
     }
     if entry.call_graph_id:
         payload["call_graph_id"] = entry.call_graph_id
     if include_docstring and entry.docstring:
         payload["docstring"] = entry.docstring
     return payload
-

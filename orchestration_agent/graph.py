@@ -30,20 +30,61 @@ def _normalise_json_text(payload: Mapping[str, Any] | List[Any]) -> str:
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
-def _core_model_fallback(core_models: Sequence[Mapping[str, Any]]) -> str:
-    names: List[str] = []
-    for model in core_models:
-        name = (
-            model.get("model_name")
-            or model.get("name")
-            or model.get("qualified_name")
-        )
-        if not name or name in names:
+def _normalise_landmarks(
+    landmarks: Sequence[Mapping[str, Any]],
+) -> List[Mapping[str, Any]]:
+    normalised: List[Mapping[str, Any]] = []
+    for landmark in landmarks:
+        if not isinstance(landmark, MutableMapping):
             continue
-        names.append(str(name))
+        node_id = (
+            landmark.get("node_id")
+            or landmark.get("id")
+            or landmark.get("identifier")
+        )
+        enriched = dict(landmark)
+        if node_id:
+            enriched.setdefault("node_id", str(node_id))
+        normalised.append(enriched)
+    return normalised
 
-    top_models = names[:7]
-    supporting = names[7:12]
+
+def _format_model_entry(model: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
+    name = (
+        model.get("model_name")
+        or model.get("name")
+        or model.get("qualified_name")
+    )
+    if not name:
+        return None
+    node_id = (
+        model.get("node_id")
+        or model.get("call_graph_id")
+        or model.get("id")
+    )
+    payload: Dict[str, Any] = {
+        "model": str(name),
+    }
+    if node_id:
+        payload["node_id"] = str(node_id)
+    return payload
+
+
+def _core_model_fallback(core_models: Sequence[Mapping[str, Any]]) -> str:
+    formatted: List[Dict[str, Any]] = []
+    seen: set[tuple[str, Optional[str]]] = set()
+    for model in core_models:
+        entry = _format_model_entry(model)
+        if not entry:
+            continue
+        key = (entry["model"], entry.get("node_id"))
+        if key in seen:
+            continue
+        seen.add(key)
+        formatted.append(entry)
+
+    top_models = formatted[:7]
+    supporting = formatted[7:12]
     payload: Dict[str, Any] = {
         "top_models": top_models,
         "model_relationships": [],
@@ -119,6 +160,7 @@ def _summarise_entry_points(entry_points: Sequence[Mapping[str, Any]]) -> str:
                 "methods": set(),
                 "handlers": set(),
                 "file_paths": set(),
+                "node_ids": set(),
             },
         )
 
@@ -132,6 +174,10 @@ def _summarise_entry_points(entry_points: Sequence[Mapping[str, Any]]) -> str:
         file_path = entry.get("file_path")
         if file_path:
             aggregate["file_paths"].add(str(file_path))
+
+        node_id = entry.get("call_graph_id") or entry.get("node_id") or entry.get("id")
+        if node_id:
+            aggregate["node_ids"].add(str(node_id))
 
     grouped_routes: Dict[str, List[tuple[str, Dict[str, Any]]]] = defaultdict(list)
     for route, aggregate in route_aggregates.items():
@@ -164,6 +210,7 @@ def _summarise_entry_points(entry_points: Sequence[Mapping[str, Any]]) -> str:
                     "methods": methods,
                     "handler": " | ".join(handlers),
                     "file_path": file_paths[0] if file_paths else "",
+                    "node_ids": sorted(aggregate["node_ids"]),
                 }
             )
             used_routes.add(route)
@@ -196,6 +243,7 @@ def _summarise_entry_points(entry_points: Sequence[Mapping[str, Any]]) -> str:
                 "methods": methods,
                 "handler": " | ".join(handlers),
                 "file_path": file_paths[0] if file_paths else "",
+                "node_ids": sorted(aggregate["node_ids"]),
             }
         )
 
@@ -222,11 +270,13 @@ def _summarise_core_models(core_models: Sequence[Mapping[str, Any]]) -> str:
     summary_prompt = (
         "You are condensing database model inventory for an orchestration agent. "
         "Given the JSON list of models below, produce a concise JSON summary with "
-        "the fields: top_models (<=7 strings), model_relationships (<=3 short "
-        "sentences describing how the models interact), supporting_models (<=5 "
-        "additional identifiers), and notes (optional short clarifications). "
-        "Use exact identifiers from the input. Use [] when you have no evidence. "
-        "Keep each sentence under 25 words.\n\n"
+        "the fields: top_models (<=7 objects with keys model, optional node_id), "
+        "model_relationships (<=3 short sentences describing how the models interact), "
+        "supporting_models (<=5 additional objects with the same shape as top_models), "
+        "and notes (optional short clarifications). "
+        "Copy model identifiers exactly as they appear in the input and propagate any "
+        "node_id values when present; omit the key when unavailable. "
+        "Use [] when you have no evidence. Keep each sentence under 25 words.\n\n"
         "Input models JSON:\n"
         f"```json\n{raw_models}\n```"
     )
@@ -285,6 +335,8 @@ def _fuse_intelligence(state: OrchestrationState) -> OrchestrationState:
     """
     entry_points: Sequence[Mapping[str, Any]] = state.get("entry_points", []) or []
     core_models: Sequence[Mapping[str, Any]] = state.get("core_models", []) or []
+    landmarks_raw: Sequence[Mapping[str, Any]] = state.get("landmarks", []) or []
+    landmarks = _normalise_landmarks(landmarks_raw)
     entry_summary = state.get("entry_point_summary")
     if not isinstance(entry_summary, str) or not entry_summary.strip():
         entry_summary = _summarise_entry_points(entry_points)
@@ -293,7 +345,7 @@ def _fuse_intelligence(state: OrchestrationState) -> OrchestrationState:
         core_summary = _summarise_core_models(core_models)
 
     prompt = build_meta_prompt(
-        state.get("landmarks", []),
+        landmarks,
         entry_summary,
         len(entry_points),
         core_summary,
@@ -307,7 +359,7 @@ def _fuse_intelligence(state: OrchestrationState) -> OrchestrationState:
             prompt,
             temperature=0.2,
             top_p=0.9,
-            max_output_tokens=8192,
+            max_output_tokens=12000,
         )
     except LLMResponseError as exc:
         fallback = _fallback_plan(state, exc)

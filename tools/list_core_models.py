@@ -175,6 +175,7 @@ def _profile_to_schema(record: ProfileRecord) -> Dict[str, Any]:
     ]
 
     schema = {
+        "node_id": record.id,
         "model_name": class_node.name,
         "qualified_name": _lookup_qualified_name(record),
         "file_path": record.file_path,
@@ -323,6 +324,7 @@ def _safe_unparse(node: Optional[ast.AST]) -> Optional[str]:
 
 def _fallback_schema(record: ProfileRecord) -> Dict[str, Any]:
     payload: Dict[str, Any] = {
+        "node_id": record.id,
         "model_name": record.class_name,
         "qualified_name": _lookup_qualified_name(record),
         "file_path": record.file_path,
