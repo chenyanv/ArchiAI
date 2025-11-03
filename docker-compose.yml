@@ -28,30 +28,13 @@ services:
       CELERY_BROKER_URL: amqp://guest:guest@rabbitmq:5672//
       CELERY_RESULT_BACKEND: rpc://
       STRUCTURAL_SCAFFOLD_DB_URL: postgresql+psycopg://archai:archai@postgres:5432/structural_scaffolding
-      CELERY_DEFAULT_QUEUE: l1_summary_queue
+      CELERY_DEFAULT_QUEUE: archai_pipeline
       CELERY_WORKER_CONCURRENCY: 8
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       SUMMARY_PROVIDER: ${SUMMARY_PROVIDER:-openai}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       ORCHESTRATION_LLM_PROVIDER: ${ORCHESTRATION_LLM_PROVIDER:-gemini}
       ORCHESTRATION_GEMINI_MODEL: ${ORCHESTRATION_GEMINI_MODEL:-gemini-2.5-pro}
-    depends_on:
-      - postgres
-      - rabbitmq
-
-  dispatcher:
-    build: .
-    volumes:
-      - ./:/app
-    command: python -m structural_scaffolding.pipeline.dispatcher --verbose --watch
-    environment:
-      CELERY_BROKER_URL: amqp://guest:guest@rabbitmq:5672//
-      CELERY_RESULT_BACKEND: rpc://
-      STRUCTURAL_SCAFFOLD_DB_URL: postgresql+psycopg://archai:archai@postgres:5432/structural_scaffolding
-      CELERY_DEFAULT_QUEUE: l1_summary_queue
-      SUMMARY_PROVIDER: ${SUMMARY_PROVIDER:-openai}
-      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
-      GEMINI_SUMMARY_MODEL: ${GEMINI_SUMMARY_MODEL:-gemini-2.5-flash}
     depends_on:
       - postgres
       - rabbitmq

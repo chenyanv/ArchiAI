@@ -6,7 +6,7 @@ from datetime import datetime
 from functools import lru_cache
 from typing import Iterable, Optional
 
-from sqlalchemy import DateTime, Integer, String, Text, UniqueConstraint, create_engine, func
+from sqlalchemy import DateTime, Integer, String, Text, create_engine, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
@@ -38,8 +38,6 @@ class ProfileRecord(Base):
     source_code: Mapped[str] = mapped_column(Text, nullable=False)
     parent_id: Mapped[Optional[str]] = mapped_column(String)
     docstring: Mapped[Optional[str]] = mapped_column(Text)
-    summary_level: Mapped[str] = mapped_column(String, nullable=False)
-    summaries: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     parameters: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     calls: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     children: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
@@ -72,33 +70,6 @@ class WorkflowRecord(Base):
     entry_point_id: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
     workflow_name: Mapped[Optional[str]] = mapped_column(String(255))
     workflow: Mapped[dict] = mapped_column(JSONB, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        nullable=False,
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        onupdate=func.now(),
-        nullable=False,
-    )
-
-
-class DirectorySummaryRecord(Base):
-    """Directory-level aggregation of file summaries."""
-
-    __tablename__ = "directory_summaries"
-    __table_args__ = (
-        UniqueConstraint("root_path", "directory_path", name="uq_directory_summaries_root_dir"),
-    )
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    root_path: Mapped[str] = mapped_column(Text, nullable=False)
-    directory_path: Mapped[str] = mapped_column(Text, nullable=False)
-    file_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    source_files: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
-    summary: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -159,8 +130,6 @@ def persist_profiles(
                 source_code=payload["source_code"],
                 parent_id=payload.get("parent_id"),
                 docstring=payload.get("docstring"),
-                summary_level=payload["summary_level"],
-                summaries=payload.get("summaries", {}),
                 parameters=payload.get("parameters", []),
                 calls=payload.get("calls", []),
                 children=payload.get("children", []),
@@ -187,5 +156,4 @@ __all__ = [
     "resolve_database_url",
     "WorkflowEntryPointRecord",
     "WorkflowRecord",
-    "DirectorySummaryRecord",
 ]

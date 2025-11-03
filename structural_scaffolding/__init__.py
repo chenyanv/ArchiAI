@@ -2,13 +2,12 @@ from __future__ import annotations
 
 from .database import DEFAULT_DATABASE_URL, persist_profiles, resolve_database_url
 from .extractor import ProfileExtractor, profiles_to_json
-from .models import Profile, SummaryLevel
+from .models import Profile
 from .parsing import TreeSitterDependencyError
 from .graphs import CallGraph, build_call_graph
 
 __all__ = [
     "Profile",
-    "SummaryLevel",
     "ProfileExtractor",
     "persist_profiles",
     "DEFAULT_DATABASE_URL",

@@ -60,10 +60,11 @@ def get_profiles_metadata(
         records = active_session.scalars(stmt).all()
         metadata: Dict[str, Dict[str, Optional[str]]] = {}
         for record in records:
+            record_data = record.data if isinstance(record.data, dict) else {}
             display_name = (
                 record.function_name
                 or record.class_name
-                or record.data.get("name")  # type: ignore[union-attr]
+                or record_data.get("name")
                 or record.id
             )
             metadata[record.id] = {
@@ -95,16 +96,21 @@ def get_full_profiles(
         records = active_session.scalars(stmt).all()
         payloads: Dict[str, Dict[str, object]] = {}
         for record in records:
+            record_data = record.data if isinstance(record.data, dict) else {}
+            summary_payload = None
+            if isinstance(record_data, dict):
+                raw_summary = record_data.get("summary")
+                summary_payload = raw_summary if raw_summary is not None else record_data.get("summaries")
             payloads[record.id] = {
                 "file_path": record.file_path,
                 "name": record.function_name
                 or record.class_name
-                or record.data.get("name")  # type: ignore[union-attr]
+                or record_data.get("name")
                 or record.id,
                 "source_code": record.source_code,
-                "summary": record.summaries or {},
-                "workflow_hints": _extract_workflow_hints(record),
-                "data": record.data or {},
+                "summary": summary_payload,
+                "workflow_hints": _extract_workflow_hints(record_data),
+                "data": record_data,
             }
         return payloads
     finally:
@@ -153,26 +159,27 @@ def save_workflow(
             active_session.close()
 
 
-def _extract_workflow_hints(record: ProfileRecord) -> Optional[dict]:
+def _extract_workflow_hints(record_data: dict | None) -> Optional[dict]:
     """Align hint extraction with entry point detection logic."""
 
-    summaries = record.summaries or {}
+    if not isinstance(record_data, dict):
+        return None
+
+    hints = record_data.get("workflow_hints")
+    if isinstance(hints, dict):
+        return hints
+
+    summaries = record_data.get("summaries")
     if isinstance(summaries, dict):
         direct = summaries.get("workflow_hints")
         if isinstance(direct, dict):
             return direct
-
         level_1 = summaries.get("level_1")
         if isinstance(level_1, dict):
             nested = level_1.get("workflow_hints")
             if isinstance(nested, dict):
                 return nested
 
-    data = record.data or {}
-    if isinstance(data, dict):
-        hints = data.get("workflow_hints")
-        if isinstance(hints, dict):
-            return hints
     return None
 
 

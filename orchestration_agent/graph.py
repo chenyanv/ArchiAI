@@ -70,7 +70,7 @@ def _format_model_entry(model: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
     return payload
 
 
-def _core_model_fallback(core_models: Sequence[Mapping[str, Any]]) -> str:
+def _core_model_snapshot(core_models: Sequence[Mapping[str, Any]]) -> str:
     formatted: List[Dict[str, Any]] = []
     seen: set[tuple[str, Optional[str]]] = set()
     for model in core_models:
@@ -92,7 +92,7 @@ def _core_model_fallback(core_models: Sequence[Mapping[str, Any]]) -> str:
     if supporting:
         payload["supporting_models"] = supporting
     payload["notes"] = [
-        "LLM summarisation unavailable; listing unique model identifiers."
+        "Condensed list of unique model identifiers derived directly from graph data."
     ]
     return _normalise_json_text(payload)
 
@@ -266,39 +266,7 @@ def _summarise_core_models(core_models: Sequence[Mapping[str, Any]]) -> str:
         }
         return _normalise_json_text(empty_payload)
 
-    raw_models = json.dumps(core_models, ensure_ascii=False)
-    summary_prompt = (
-        "You are condensing database model inventory for an orchestration agent. "
-        "Given the JSON list of models below, produce a concise JSON summary with "
-        "the fields: top_models (<=7 objects with keys model, optional node_id), "
-        "model_relationships (<=3 short sentences describing how the models interact), "
-        "supporting_models (<=5 additional objects with the same shape as top_models), "
-        "and notes (optional short clarifications). "
-        "Copy model identifiers exactly as they appear in the input and propagate any "
-        "node_id values when present; omit the key when unavailable. "
-        "Use [] when you have no evidence. Keep each sentence under 25 words.\n\n"
-        "Input models JSON:\n"
-        f"```json\n{raw_models}\n```"
-    )
-
-    try:
-        response = invoke_llm(
-            summary_prompt,
-            temperature=0.0,
-            max_output_tokens=512,
-        )
-    except LLMResponseError:
-        return _core_model_fallback(core_models)
-
-    for candidate in _iter_json_candidates(response):
-        try:
-            parsed = json.loads(candidate)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(parsed, (MutableMapping, list)):
-            return _normalise_json_text(parsed)  # type: ignore[arg-type]
-
-    return _core_model_fallback(core_models)
+    return _core_model_snapshot(core_models)
 
 
 def _gather_intelligence(_: OrchestrationState) -> OrchestrationState:

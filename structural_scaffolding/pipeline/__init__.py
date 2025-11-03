@@ -1,4 +1,4 @@
-"""Pipeline utilities for asynchronous profile summarisation."""
+"""Pipeline utilities for asynchronous workflow processing."""
 
 from .celery_app import celery_app
 

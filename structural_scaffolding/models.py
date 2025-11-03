@@ -1,16 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from enum import Enum
-from typing import Dict, List, Optional
-
-
-class SummaryLevel(str, Enum):
-    NONE = "NONE"
-    LEVEL_1_IN_PROGRESS = "LEVEL_1_IN_PROGRESS"
-    LEVEL_1 = "LEVEL_1"
-    LEVEL_2_IN_PROGRESS = "LEVEL_2_IN_PROGRESS"
-    LEVEL_2_COMPLETED = "LEVEL_2_COMPLETED"
+from typing import List, Optional
 
 
 @dataclass(slots=True)
@@ -27,17 +18,13 @@ class Profile:
     source_code: str
     parent_id: Optional[str] = None
     docstring: Optional[str] = None
-    summary_level: SummaryLevel = SummaryLevel.NONE
-    summaries: Dict[str, str] = field(default_factory=dict)
     parameters: List[str] = field(default_factory=list)
     calls: List[str] = field(default_factory=list)
     children: List[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         # dataclasses.asdict preserves nested slots and ensures JSON serialization.
-        data = asdict(self)
-        data["summary_level"] = self.summary_level.value
-        return data
+        return asdict(self)
 
 
-__all__ = ["Profile", "SummaryLevel"]
+__all__ = ["Profile"]

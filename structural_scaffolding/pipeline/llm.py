@@ -8,9 +8,6 @@ from typing import Any, Dict, Optional, Sequence
 
 from openai import APITimeoutError, APIError, OpenAI, RateLimitError
 
-from .context import DirectorySummaryContext, L1SummaryContext
-from .prompts import build_directory_messages, build_l1_messages
-
 
 class SummaryProvider(str, Enum):
     OPENAI = "openai"
@@ -44,44 +41,6 @@ class ChatSettings:
 class ProviderSettings:
     openai: ChatSettings
     gemini: ChatSettings
-
-
-def request_l1_summary(
-    context: L1SummaryContext,
-    *,
-    model: Optional[str] = None,
-) -> Dict[str, Any]:
-    settings = _l1_settings(model_override=model)
-    provider = _resolve_provider("SUMMARY_PROVIDER")
-    messages = build_l1_messages(context)
-    raw_response = _execute_chat(messages, settings=settings, provider=provider)
-    payload = _extract_json_object(raw_response)
-    try:
-        data = json.loads(payload)
-    except json.JSONDecodeError as exc:
-        raise LLMPermanentError(f"L1 summary provider returned non-JSON content: {payload}") from exc
-    if not isinstance(data, dict):
-        raise LLMPermanentError("L1 summary response must be a JSON object")
-    return _normalise_l1_payload(data)
-
-
-def request_directory_summary(
-    context: DirectorySummaryContext,
-    *,
-    model: Optional[str] = None,
-) -> Dict[str, Any]:
-    settings = _l1_settings(model_override=model)
-    provider = _resolve_provider("DIRECTORY_PROVIDER", "SUMMARY_PROVIDER")
-    messages = build_directory_messages(context)
-    raw_response = _execute_chat(messages, settings=settings, provider=provider)
-    payload = _extract_json_object(raw_response)
-    try:
-        data = json.loads(payload)
-    except json.JSONDecodeError as exc:
-        raise LLMPermanentError(f"Directory summary provider returned non-JSON content: {payload}") from exc
-    if not isinstance(data, dict):
-        raise LLMPermanentError("Directory summary response must be a JSON object")
-    return _normalise_directory_payload(data, directory=context.directory_path)
 
 
 def request_workflow_completion(
@@ -228,20 +187,6 @@ def _call_gemini(messages: Sequence[dict[str, str]], settings: ChatSettings) -> 
     raise LLMPermanentError("Gemini response did not include content")
 
 
-def _l1_settings(*, model_override: Optional[str]) -> ProviderSettings:
-    openai_settings = ChatSettings(
-        model=model_override or os.getenv("OPENAI_SUMMARY_MODEL", "gpt-4o-mini"),
-        temperature=float(os.getenv("OPENAI_SUMMARY_TEMPERATURE", "0.2")),
-        max_tokens=int(os.getenv("OPENAI_SUMMARY_MAX_TOKENS", "600")),
-    )
-    gemini_settings = ChatSettings(
-        model=model_override or os.getenv("GEMINI_SUMMARY_MODEL", "gemini-2.5-flash"),
-        temperature=float(os.getenv("GEMINI_SUMMARY_TEMPERATURE", "0.2")),
-        max_tokens=int(os.getenv("GEMINI_SUMMARY_MAX_TOKENS", "1024")),
-    )
-    return ProviderSettings(openai=openai_settings, gemini=gemini_settings)
-
-
 def _workflow_settings(*, model_override: Optional[str]) -> ProviderSettings:
     openai_settings = ChatSettings(
         model=model_override
@@ -361,144 +306,11 @@ def _extract_json_object(raw_text: str) -> str:
     return text
 
 
-def _normalise_l1_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
-    summary = payload.get("summary")
-    if not isinstance(summary, dict):
-        summary = {}
-
-    workflow_hints = payload.get("workflow_hints")
-    if not isinstance(workflow_hints, dict):
-        workflow_hints = {}
-
-    entry_point_raw = payload.get("entry_point")
-    entry_point: Dict[str, Any] | None
-    if isinstance(entry_point_raw, dict):
-        profile_id = str(entry_point_raw.get("profile_id") or "").strip()
-        if profile_id:
-            entry_point = {
-                "profile_id": profile_id,
-                "display_name": str(entry_point_raw.get("display_name") or "").strip() or profile_id,
-                "confidence": _normalise_confidence_label(entry_point_raw.get("confidence")),
-                "reasons": str(entry_point_raw.get("reasons") or "").strip(),
-            }
-        else:
-            entry_point = None
-    else:
-        entry_point = None
-
-    return {
-        "summary": summary,
-        "workflow_hints": workflow_hints,
-        "entry_point": entry_point,
-    }
-
-
-def _normalise_directory_payload(payload: Dict[str, Any], *, directory: str) -> Dict[str, Any]:
-    overview = payload.get("overview")
-    if not isinstance(overview, str) or not overview.strip():
-        overview = "Overview unavailable."
-    else:
-        overview = overview.strip()
-
-    business_logic = payload.get("business_logic_reasoning")
-    if not isinstance(business_logic, str) or not business_logic.strip():
-        business_logic = overview
-
-    inputs = _string_list(payload.get("inputs"))
-    outputs = _string_list(payload.get("outputs"))
-    module_interactions = _string_list(payload.get("module_interactions"))
-
-    key_capabilities = _string_list(payload.get("key_capabilities"))
-    notable_entry_points = _string_list(payload.get("notable_entry_points"))
-
-    dependencies = _string_list(payload.get("dependencies"))
-    follow_up = _string_list(payload.get("follow_up"))
-
-    directory_name = payload.get("directory")
-    if not isinstance(directory_name, str) or not directory_name.strip():
-        directory_name = directory
-    else:
-        directory_name = directory_name.strip()
-
-    level_value = payload.get("level")
-    level = _normalise_directory_level(level_value, directory_name)
-
-    # Provide fallbacks so legacy schemas remain compatible.
-    if not module_interactions and dependencies:
-        module_interactions = list(dependencies)
-
-    return {
-        "directory": directory_name,
-        "level": level,
-        "overview": overview,
-        "business_logic_reasoning": business_logic.strip(),
-        "inputs": inputs,
-        "outputs": outputs,
-        "module_interactions": module_interactions,
-        "key_capabilities": key_capabilities,
-        "notable_entry_points": notable_entry_points,
-        "dependencies": dependencies,
-        "follow_up": follow_up,
-    }
-
-
-def _normalise_confidence_label(value: Any) -> str:
-    label = ""
-    if isinstance(value, str):
-        label = value.strip().upper()
-    elif value is not None:
-        label = str(value).strip().upper()
-
-    if label in {"HIGH", "MEDIUM", "LOW"}:
-        return label
-    return "MEDIUM"
-
-
-def _string_list(value: Any) -> list[str]:
-    if isinstance(value, list):
-        normalised: list[str] = []
-        for item in value:
-            if isinstance(item, str):
-                text = item.strip()
-                if text:
-                    normalised.append(text)
-            elif item is not None:
-                text = str(item).strip()
-                if text:
-                    normalised.append(text)
-        return normalised
-    if isinstance(value, str):
-        text = value.strip()
-        return [text] if text else []
-    if value is not None:
-        text = str(value).strip()
-        return [text] if text else []
-    return []
-
-
-def _normalise_directory_level(value: Any, directory: str) -> int:
-    try:
-        level = int(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        level = _infer_directory_level(directory)
-    return max(level, 0)
-
-
-def _infer_directory_level(directory: str) -> int:
-    path = directory or "."
-    if path in {".", "./"}:
-        return 0
-    segments = [segment for segment in path.strip("/").split("/") if segment and segment != "."]
-    return len(segments)
-
-
 __all__ = [
     "LLMConfigurationError",
     "LLMError",
     "LLMPermanentError",
     "LLMRetryableError",
     "SummaryProvider",
-    "request_directory_summary",
-    "request_l1_summary",
     "request_workflow_completion",
 ]
