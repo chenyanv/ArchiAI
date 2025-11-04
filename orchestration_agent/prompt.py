@@ -51,7 +51,7 @@ Here is a condensed summary of the key data entities and notable relationships.
 2. Craft the system overview so that the headline and workflows narrate how the dominant data models collaborate to deliver value. Explicitly call out the interactions between people, APIs, and data entities that make the product work.
 3. Identify every distinct business capability supported by strong evidence. Prefer more, smaller component cards over large blended ones; when signals point to separate workflows, split them instead of collapsing them.
 4. Order the component cards to follow a logical customer journey or data lifecycle (e.g. ingest → enrich → serve). Use your judgement to align the sequence with how the system likely operates.
-5. Make every component card feel “clickable”: surface the key files/functions, explain the business action in plain language, and propose sub-agent objectives that could drive deeper analysis.
+5. Make every component card feel “clickable”: surface the key files/functions, explain the business action in plain language, and list succinct investigation objectives in the `objective` array.
 6. Only add `recent_activity_hint` or `risk_flags` when the raw signals justify them (e.g. high centrality utilities, deprecated endpoints, duplicated model names). Otherwise omit those optional fields.
 7. Keep the JSON concise and factual; when evidence is missing, give empty arrays instead of speculation.
 8. Propagate `node_id` values from the reports. When you mention a landmark, entry point, or core model, return an object that includes both the human-readable identifier and the `node_id` (omit the key only when absent in the source).
@@ -88,18 +88,10 @@ Return a single JSON object with this structure (strictly follow field order):
           {{"node_id": "node-789", "model": "..."}}
         ]
       }},
-      "subagent_payload": {{
-        "objective": ["Follow-up question 1", "Follow-up question 2"],
-        "starting_points": [
-          {{"node_id": "node-456", "symbol": "python::path::symbol"}}
-        ],
-        "related_entry_points": [
-          {{"node_id": "node-123", "route": "/api/..."}}
-        ],
-        "related_models": [
-          {{"node_id": "node-789", "model": "ModelName"}}
-        ]
-      }},
+      "objective": [
+        "Follow-up question 1",
+        "Follow-up question 2"
+      ],
       "confidence": "high|medium|low",
       "recent_activity_hint": "Optional: omit when no signal suggests recency.",
       "risk_flags": ["Optional: omit when no risk indicators appear."]
