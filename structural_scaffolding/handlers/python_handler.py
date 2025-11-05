@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 import ast
+from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
-from structural_scaffolding.models import Profile
+from structural_scaffolding.models import (
+    CallSite,
+    ImportSite,
+    InheritanceRef,
+    Profile,
+    UseSite,
+)
 from structural_scaffolding.parsing import TreeSitterParser, node_text, sanitize_call_name
 
 from .base import BaseLanguageHandler
@@ -35,7 +42,9 @@ class PythonProfileBuilder:
         root = source_tree.root_node
 
         file_profile, nested_profiles = self._build_file_profile(root)
-        return [file_profile, *nested_profiles]
+        profiles = [file_profile, *nested_profiles]
+        self._populate_semantic_metadata(profiles)
+        return profiles
 
     def _build_file_profile(self, root_node) -> Tuple[Profile, List[Profile]]:
         file_id = self._context.build_file_id()
@@ -62,6 +71,41 @@ class PythonProfileBuilder:
         )
 
         return file_profile, child_profiles
+
+    def _populate_semantic_metadata(self, profiles: List[Profile]) -> None:
+        analyzer = PythonSemanticAnalyzer(self._context)
+        analysis = analyzer.analyze()
+        if analysis is None:
+            return
+
+        profile_lookup: Dict[str, Profile] = {profile.id: profile for profile in profiles}
+
+        file_id = self._context.build_file_id()
+        file_profile = profile_lookup.get(file_id)
+        if file_profile is not None:
+            file_profile.import_sites = analysis.imports
+
+        for profile_id, call_sites in analysis.call_sites.items():
+            profile = profile_lookup.get(profile_id)
+            if profile is None:
+                continue
+            profile.call_sites = call_sites
+            profile.calls = [site.expression for site in call_sites]
+
+        for profile_id, uses in analysis.uses.items():
+            profile = profile_lookup.get(profile_id)
+            if profile is None:
+                continue
+            if profile.uses:
+                profile.uses.extend(uses)
+            else:
+                profile.uses = list(uses)
+
+        for profile_id, inheritance in analysis.inheritance.items():
+            profile = profile_lookup.get(profile_id)
+            if profile is None:
+                continue
+            profile.inheritance = inheritance
 
     def _build_class_profile(
         self,
@@ -229,6 +273,296 @@ class PythonHandler(BaseLanguageHandler):
         builder = PythonProfileBuilder(self._parser, context)
         return builder.build_profiles()
 
+
+@dataclass(slots=True)
+class PythonSemanticAnalysis:
+    imports: List[ImportSite]
+    call_sites: Dict[str, List[CallSite]]
+    uses: Dict[str, List[UseSite]]
+    inheritance: Dict[str, List[InheritanceRef]]
+
+
+class PythonSemanticAnalyzer(ast.NodeVisitor):
+    def __init__(self, context: PythonNodeContext) -> None:
+        self._context = context
+        self._path_str = context.relative_path.as_posix()
+        self._module_path = self._derive_module_path()
+        self._file_id = context.build_file_id()
+        self._imports: List[ImportSite] = []
+        self._call_sites: Dict[str, List[CallSite]] = defaultdict(list)
+        self._uses: Dict[str, List[UseSite]] = defaultdict(list)
+        self._inheritance: Dict[str, List[InheritanceRef]] = defaultdict(list)
+        self._class_stack: List[str] = []
+        self._function_stack: List[str] = []
+
+    def analyze(self) -> PythonSemanticAnalysis | None:
+        try:
+            tree = ast.parse(self._context.source_text)
+        except SyntaxError:
+            return None
+        self.visit(tree)
+        return PythonSemanticAnalysis(
+            imports=list(self._imports),
+            call_sites={key: list(value) for key, value in self._call_sites.items() if value},
+            uses={key: list(value) for key, value in self._uses.items() if value},
+            inheritance={key: list(value) for key, value in self._inheritance.items() if value},
+        )
+
+    def visit_Import(self, node: ast.Import) -> None:
+        line = getattr(node, "lineno", 0)
+        for alias in node.names:
+            module = sanitize_call_name(alias.name)
+            site = ImportSite(
+                module=module or None,
+                name=None,
+                alias=alias.asname,
+                line=line,
+                level=0,
+                is_star=False,
+            )
+            self._add_import_site(site)
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        line = getattr(node, "lineno", 0)
+        level = int(getattr(node, "level", 0) or 0)
+        module = self._resolve_relative_import(node.module, level)
+        for alias in node.names:
+            is_star = alias.name == "*"
+            name = None if is_star else sanitize_call_name(alias.name)
+            site = ImportSite(
+                module=module,
+                name=name,
+                alias=alias.asname,
+                line=line,
+                level=level,
+                is_star=is_star,
+            )
+            self._add_import_site(site)
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        self._class_stack.append(node.name)
+        class_id = self._build_class_id()
+        fallback_line = getattr(node, "lineno", 0)
+
+        for base in node.bases:
+            symbol = self._expr_to_name(base)
+            if not symbol:
+                continue
+            ref = InheritanceRef(symbol=symbol, line=getattr(base, "lineno", fallback_line))
+            self._append_unique(self._inheritance[class_id], ref)
+
+        self._record_decorators(class_id, node.decorator_list, fallback_line)
+        self.generic_visit(node)
+        self._class_stack.pop()
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self._handle_function(node)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self._handle_function(node)
+
+    def visit_Call(self, node: ast.Call) -> None:
+        # Calls are processed explicitly via FunctionCallVisitor to avoid duplicates.
+        self.generic_visit(node)
+
+    def _handle_function(self, node: ast.AST) -> None:
+        name = getattr(node, "name", None)
+        if not name:
+            return
+
+        if self._function_stack:
+            self._function_stack.append(name)
+            self.generic_visit(node)
+            self._function_stack.pop()
+            return
+
+        profile_id = self._build_function_id(name)
+        fallback_line = getattr(node, "lineno", 0)
+
+        self._function_stack.append(name)
+        decorator_list = getattr(node, "decorator_list", [])
+        self._record_decorators(profile_id, decorator_list, fallback_line)
+        self._record_type_hints(profile_id, node)
+
+        call_visitor = _FunctionCallVisitor(self._expr_to_name)
+        call_visitor.visit(node)
+        for expression, line in call_visitor.calls:
+            site = CallSite(expression=expression, line=line)
+            self._append_unique(self._call_sites[profile_id], site)
+
+        self.generic_visit(node)
+        self._function_stack.pop()
+
+    def _derive_module_path(self) -> str:
+        path = self._path_str
+        if path.endswith(".py"):
+            path = path[:-3]
+        return path.replace("/", ".")
+
+    def _resolve_relative_import(self, module: Optional[str], level: int) -> Optional[str]:
+        if level <= 0:
+            return sanitize_call_name(module) if module else module
+
+        module_tokens = [token for token in self._module_path.split(".") if token]
+        if level > len(module_tokens):
+            prefix: List[str] = []
+        else:
+            prefix = module_tokens[:-level]
+
+        module_suffix: List[str] = []
+        if module:
+            module_suffix = [token for token in sanitize_call_name(module).split(".") if token]
+
+        combined = [*prefix, *module_suffix]
+        if not combined:
+            return None
+        return ".".join(combined)
+
+    def _build_class_id(self) -> str:
+        qualified = "::".join(self._class_stack)
+        return f"python::{self._path_str}::{qualified}"
+
+    def _build_function_id(self, function_name: str) -> str:
+        class_segment = "::".join(self._class_stack)
+        if class_segment:
+            qualified = f"{class_segment}::{function_name}"
+        else:
+            qualified = function_name
+        return f"python::{self._path_str}::{qualified}"
+
+    def _record_decorators(self, profile_id: str, decorators: Iterable[ast.AST], fallback_line: int) -> None:
+        for decorator in decorators or ():
+            symbol = self._expr_to_name(decorator)
+            if not symbol:
+                continue
+            use = UseSite(
+                symbol=symbol,
+                use_kind="DECORATOR",
+                line=getattr(decorator, "lineno", fallback_line),
+                detail=None,
+            )
+            self._append_unique(self._uses[profile_id], use)
+
+    def _record_type_hints(self, profile_id: str, node: ast.AST) -> None:
+        parameters: List[ast.arg] = []
+        args = getattr(node, "args", None)
+        if args is not None:
+            parameters.extend(getattr(args, "posonlyargs", []))
+            parameters.extend(getattr(args, "args", []))
+            vararg = getattr(args, "vararg", None)
+            if vararg is not None:
+                parameters.append(vararg)
+            parameters.extend(getattr(args, "kwonlyargs", []))
+            kwarg = getattr(args, "kwarg", None)
+            if kwarg is not None:
+                parameters.append(kwarg)
+
+        for parameter in parameters:
+            annotation = getattr(parameter, "annotation", None)
+            if annotation is None:
+                continue
+            detail = f"parameter:{getattr(parameter, 'arg', '')}"
+            self._record_annotation(profile_id, annotation, detail)
+
+        returns = getattr(node, "returns", None)
+        if returns is not None:
+            self._record_annotation(profile_id, returns, "return")
+
+    def _record_annotation(self, profile_id: str, annotation: ast.AST, detail: str) -> None:
+        for symbol in self._collect_annotation_symbols(annotation):
+            if not symbol:
+                continue
+            use = UseSite(
+                symbol=symbol,
+                use_kind="TYPE_HINT",
+                line=getattr(annotation, "lineno", 0),
+                detail=detail,
+            )
+            self._append_unique(self._uses[profile_id], use)
+
+    def _collect_annotation_symbols(self, annotation: ast.AST) -> Set[str]:
+        symbols: Set[str] = set()
+        for node in ast.walk(annotation):
+            if isinstance(node, ast.Name):
+                identifier = node.id
+                if identifier in {"self", "cls"}:
+                    continue
+                symbols.add(sanitize_call_name(identifier))
+            elif isinstance(node, ast.Attribute):
+                name = self._expr_to_name(node)
+                if name:
+                    symbols.add(name)
+        return {symbol for symbol in symbols if symbol}
+
+    def _expr_to_name(self, expr: ast.AST | None) -> Optional[str]:
+        if expr is None:
+            return None
+        if isinstance(expr, ast.Name):
+            return sanitize_call_name(expr.id)
+        if isinstance(expr, ast.Attribute):
+            parts: List[str] = []
+            current = expr
+            while isinstance(current, ast.Attribute):
+                parts.append(current.attr)
+                current = current.value
+            if isinstance(current, ast.Name):
+                parts.append(current.id)
+            else:
+                return None
+            return sanitize_call_name(".".join(reversed(parts)))
+        if isinstance(expr, ast.Subscript):
+            return self._expr_to_name(expr.value)
+        if isinstance(expr, ast.Call):
+            return self._expr_to_name(expr.func)
+        if hasattr(ast, "unparse"):
+            try:
+                return sanitize_call_name(ast.unparse(expr))
+            except Exception:
+                return None
+        return None
+
+    def _add_import_site(self, site: ImportSite) -> None:
+        if site.is_star:
+            # Star imports provide little value for intra-repo connections.
+            return
+        if any(existing == site for existing in self._imports):
+            return
+        self._imports.append(site)
+
+    @staticmethod
+    def _append_unique(collection: List, item) -> None:
+        if item not in collection:
+            collection.append(item)
+
+
+class _FunctionCallVisitor(ast.NodeVisitor):
+    def __init__(self, expr_to_name) -> None:
+        self._expr_to_name = expr_to_name
+        self.calls: List[Tuple[str, int]] = []
+        self._function_depth = 0
+
+    def visit_Call(self, node: ast.Call) -> None:
+        name = self._expr_to_name(getattr(node, "func", None))
+        if name:
+            self.calls.append((name, getattr(node, "lineno", 0)))
+        self.generic_visit(node)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        if self._function_depth > 0:
+            return
+        self._function_depth += 1
+        self.generic_visit(node)
+        self._function_depth -= 1
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        if self._function_depth > 0:
+            return
+        self._function_depth += 1
+        self.generic_visit(node)
+        self._function_depth -= 1
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        return
 
 def get_identifier(node, source_bytes: bytes, field_name: str) -> str:
     name_node = node.child_by_field_name(field_name)

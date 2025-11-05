@@ -3,11 +3,11 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
-from typing import Dict, Iterable, List, MutableMapping, Sequence, Set
+from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Sequence, Set
 
 import networkx as nx
 
-from structural_scaffolding.models import Profile
+from structural_scaffolding.models import CallSite, ImportSite, InheritanceRef, Profile, UseSite
 from structural_scaffolding.parsing import sanitize_call_name
 
 
@@ -15,22 +15,25 @@ from structural_scaffolding.parsing import sanitize_call_name
 class CallGraph:
     """Container around a NetworkX directed graph representing intra-repository calls."""
 
-    graph: nx.DiGraph
-    """Directed graph whose nodes are profile identifiers and edges represent call sites."""
+    graph: nx.MultiDiGraph
+    """Directed multigraph whose edges encode typed relationships between profiles."""
     unresolved_calls: Set[str] = field(default_factory=set)
     """Names of calls that could not be resolved to a known profile."""
 
-    def to_edge_index(self) -> List[Dict[str, str]]:
+    def to_edge_index(self) -> List[Dict[str, Any]]:
         """Return a serialisable list of edges with core attributes."""
-        return [
-            {
+        edges: List[Dict[str, Any]] = []
+        for source, target, key, data in self.graph.edges(keys=True, data=True):
+            payload: Dict[str, Any] = {
                 "source": source,
                 "target": target,
-                "call": data.get("call", ""),
-                "resolved": bool(data.get("resolved", False)),
+                "type": data.get("type"),
             }
-            for source, target, data in self.graph.edges(data=True)
-        ]
+            for field in ("call_sites", "imports", "usages", "inheritance", "child_kind", "line", "resolved"):
+                if field in data:
+                    payload[field] = data[field]
+            edges.append(payload)
+        return edges
 
 
 _ROOT_CATEGORY_MAP: Dict[str, str] = {
@@ -412,10 +415,134 @@ def _profile_category(profile: Profile) -> str:
     return category
 
 
+def _call_site_payload(site: CallSite) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {"expression": site.expression}
+    if site.line:
+        payload["line"] = site.line
+    if site.context:
+        payload["context"] = site.context
+    return payload
+
+
+def _import_site_payload(site: ImportSite) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {"line": site.line}
+    if site.module:
+        payload["module"] = site.module
+    if site.name:
+        payload["symbol"] = site.name
+    qualified = sanitize_call_name(site.qualified)
+    if qualified:
+        payload["qualified"] = qualified
+    if site.alias:
+        payload["alias"] = site.alias
+    return payload
+
+
+def _use_site_payload(use: UseSite) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {
+        "symbol": use.symbol,
+        "use_kind": use.use_kind,
+        "line": use.line,
+    }
+    if use.detail:
+        payload["detail"] = use.detail
+    return payload
+
+
+def _inheritance_payload(ref: InheritanceRef) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {"symbol": ref.symbol}
+    if ref.line:
+        payload["line"] = ref.line
+    return payload
+
+
+def _append_payload(attrs: Dict[str, Any], field: str, payload: Dict[str, Any]) -> None:
+    if not payload:
+        return
+    bucket = attrs.setdefault(field, [])
+    if payload not in bucket:
+        bucket.append(payload)
+
+
+def _ensure_edge(graph: nx.MultiDiGraph, source: str, target: str, edge_type: str) -> Dict[str, Any]:
+    existing = graph.get_edge_data(source, target)
+    if existing:
+        for key, attrs in existing.items():
+            if attrs.get("type") == edge_type:
+                return attrs
+        suffix = 1
+        while True:
+            candidate = f"{edge_type}:{suffix}"
+            if candidate not in existing:
+                graph.add_edge(source, target, key=candidate, type=edge_type)
+                return graph.get_edge_data(source, target)[candidate]
+            suffix += 1
+    graph.add_edge(source, target, key=edge_type, type=edge_type)
+    return graph.get_edge_data(source, target)[edge_type]
+
+
+def _resolve_alias(alias_index: Mapping[str, Set[str]], identifier: str) -> Set[str]:
+    if not identifier:
+        return set()
+    alias = sanitize_call_name(identifier)
+    return set(alias_index.get(alias, set()))
+
+
+def _resolve_import_targets(alias_index: Mapping[str, Set[str]], site: ImportSite) -> Set[str]:
+    candidates: Set[str] = set()
+    for alias in _import_aliases(site):
+        candidates.update(alias_index.get(alias, set()))
+    return candidates
+
+
+def _import_aliases(site: ImportSite) -> Set[str]:
+    aliases: Set[str] = set()
+
+    qualified = sanitize_call_name(site.qualified)
+    if qualified:
+        aliases.add(qualified)
+        aliases.add(qualified.replace(".", "::"))
+
+    module = sanitize_call_name(site.module) if site.module else ""
+    name = sanitize_call_name(site.name) if site.name else ""
+
+    if module:
+        aliases.add(module)
+        aliases.add(module.replace(".", "::"))
+        module_path = _module_path_to_file(module)
+        if module_path:
+            aliases.add(module_path)
+
+    if name:
+        aliases.add(name)
+        if module:
+            combined_dot = sanitize_call_name(f"{module}.{name}")
+            combined_scope = sanitize_call_name(f"{module}::{name}")
+            if combined_dot:
+                aliases.add(combined_dot)
+            if combined_scope:
+                aliases.add(combined_scope)
+
+            path_alias = _module_path_to_file(module)
+            if path_alias:
+                aliases.add(f"{path_alias}::{name}")
+
+    return {alias for alias in aliases if alias}
+
+
+def _module_path_to_file(module: str) -> str:
+    if not module:
+        return ""
+    if module.endswith(".py"):
+        return module
+    return module.replace(".", "/") + ".py"
+
+
 def build_call_graph(profiles: Sequence[Profile]) -> CallGraph:
     """Construct a directed call graph based on extracted profiles."""
-    graph = nx.DiGraph()
+    graph = nx.MultiDiGraph()
     filtered_profiles = [profile for profile in profiles if not _is_noisy_profile(profile)]
+    profile_lookup: Dict[str, Profile] = {profile.id: profile for profile in filtered_profiles}
     alias_index = _build_alias_index(filtered_profiles)
     unresolved: Set[str] = set()
 
@@ -430,41 +557,110 @@ def build_call_graph(profiles: Sequence[Profile]) -> CallGraph:
             label=_profile_label(profile),
         )
 
+    # Structural containment edges.
     for profile in filtered_profiles:
-        for call_expr in profile.calls:
-            call = sanitize_call_name(call_expr)
+        for child_id in profile.children:
+            if child_id not in profile_lookup:
+                continue
+            child = profile_lookup[child_id]
+            attrs = _ensure_edge(graph, profile.id, child_id, "CONTAINS")
+            attrs.setdefault("child_kind", child.kind)
+            if child.start_line and "line" not in attrs:
+                attrs["line"] = child.start_line
+
+    # Import relationships.
+    for profile in filtered_profiles:
+        if profile.kind != "file":
+            continue
+        for import_site in profile.import_sites:
+            targets = _resolve_import_targets(alias_index, import_site)
+            if not targets:
+                continue
+            payload = _import_site_payload(import_site)
+            for target in targets:
+                if target == profile.id or target not in graph:
+                    continue
+                attrs = _ensure_edge(graph, profile.id, target, "IMPORTS")
+                _append_payload(attrs, "imports", payload)
+
+    # Inheritance edges.
+    for profile in filtered_profiles:
+        if profile.kind != "class":
+            continue
+        for ref in profile.inheritance:
+            for target in _resolve_alias(alias_index, ref.symbol):
+                if target == profile.id or target not in graph:
+                    continue
+                attrs = _ensure_edge(graph, profile.id, target, "INHERITS_FROM")
+                _append_payload(attrs, "inheritance", _inheritance_payload(ref))
+
+    # Explicit USES edges gathered during parsing (decorators, type hints).
+    for profile in filtered_profiles:
+        if not profile.uses:
+            continue
+        for use in profile.uses:
+            if use.use_kind == "INSTANTIATION":
+                continue
+            for target in _resolve_alias(alias_index, use.symbol):
+                if target == profile.id or target not in graph:
+                    continue
+                attrs = _ensure_edge(graph, profile.id, target, "USES")
+                _append_payload(attrs, "usages", _use_site_payload(use))
+
+    # Call relationships and instantiation uses.
+    for profile in filtered_profiles:
+        if profile.kind not in {"function", "method"}:
+            continue
+
+        call_sites: Iterable[CallSite]
+        if profile.call_sites:
+            call_sites = profile.call_sites
+        else:
+            call_sites = [CallSite(expression=call, line=0) for call in profile.calls]
+
+        for site in call_sites:
+            call = sanitize_call_name(site.expression)
             if not call or _is_noisy_call(call):
                 continue
-            resolved = False
-            target_candidates = alias_index.get(call, set())
 
+            target_candidates = _resolve_alias(alias_index, call)
             if target_candidates:
-                resolved = True
                 for target in target_candidates:
-                    graph.add_edge(
-                        profile.id,
-                        target,
-                        call=call,
-                        resolved=True,
-                    )
-            else:
-                if _is_noisy_external_call(call):
-                    continue
-                unresolved.add(call)
-                external_node = f"external::{call}"
-                if external_node not in graph:
-                    graph.add_node(
-                        external_node,
-                        kind="external_call",
-                        category="external",
-                        label=call,
-                    )
-                graph.add_edge(
-                    profile.id,
+                    if target not in graph:
+                        continue
+                    target_kind = graph.nodes[target].get("kind")
+                    if target_kind == "class":
+                        use_payload = _use_site_payload(
+                            UseSite(
+                                symbol=call,
+                                use_kind="INSTANTIATION",
+                                line=site.line,
+                                detail=site.context or site.expression,
+                            )
+                        )
+                        attrs = _ensure_edge(graph, profile.id, target, "USES")
+                        _append_payload(attrs, "usages", use_payload)
+                    else:
+                        attrs = _ensure_edge(graph, profile.id, target, "CALLS")
+                        attrs.setdefault("resolved", True)
+                        _append_payload(attrs, "call_sites", _call_site_payload(site))
+                continue
+
+            if _is_noisy_external_call(call):
+                continue
+
+            unresolved.add(call)
+            external_node = f"external::{call}"
+            if external_node not in graph:
+                graph.add_node(
                     external_node,
-                    call=call,
-                    resolved=False,
+                    kind="external_call",
+                    category="external",
+                    label=call,
                 )
+            attrs = _ensure_edge(graph, profile.id, external_node, "CALLS")
+            attrs["resolved"] = False
+            _append_payload(attrs, "call_sites", _call_site_payload(site))
 
     return CallGraph(graph=graph, unresolved_calls=unresolved)
 
@@ -635,11 +831,38 @@ def _profile_aliases(profile: Profile) -> Iterable[str]:
 
     add(profile.id)
     add(profile.file_path)
+
+    module_path = ""
+    if profile.file_path:
+        path_obj = _normalise_path(profile.file_path)
+        module_path = str(path_obj.with_suffix("")).replace("/", ".")
+        add(module_path)
+        if module_path:
+            add(module_path.replace(".", "::"))
+        file_alias = path_obj.as_posix()
+        if file_alias:
+            add(file_alias)
+
     add(profile.function_name)
     add(profile.class_name)
+
+    simple_class = ""
+    if profile.class_name:
+        simple_class = profile.class_name.split(".")[-1]
+        if module_path and simple_class:
+            add(f"{module_path}.{simple_class}")
+            add(f"{module_path}::{simple_class}")
+
     if profile.function_name and profile.class_name:
         add(f"{profile.class_name}.{profile.function_name}")
         add(f"{profile.class_name}::{profile.function_name}")
+        if module_path and simple_class:
+            add(f"{module_path}.{simple_class}.{profile.function_name}")
+            add(f"{module_path}::{simple_class}::{profile.function_name}")
+
+    if profile.function_name and module_path:
+        add(f"{module_path}.{profile.function_name}")
+        add(f"{module_path}::{profile.function_name}")
 
     return aliases
 

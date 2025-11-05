@@ -7,7 +7,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Set
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Set
 
 import networkx as nx
 from pydantic import BaseModel, Field
@@ -18,7 +18,7 @@ DEFAULT_GRAPH_PATH = Path("results/graphs/call_graph.json")
 
 
 @lru_cache(maxsize=1)
-def _load_cached_graph(path: str) -> nx.DiGraph:
+def _load_cached_graph(path: str) -> nx.MultiDiGraph:
     """Load and cache the call graph to avoid repeated disk I/O."""
     return load_graph_from_json(path)
 
@@ -41,9 +41,37 @@ def _extract_weight(edge_attrs: Mapping[str, Any]) -> float:
     return weight
 
 
+def _iter_edge_attrs_of_type(
+    graph: nx.MultiDiGraph,
+    source: str,
+    target: str,
+    edge_type: str,
+) -> List[Mapping[str, Any]]:
+    data = graph.get_edge_data(source, target)
+    if not data:
+        return []
+    if graph.is_multigraph():
+        return [attrs for attrs in data.values() if attrs.get("type") == edge_type]
+    if data.get("type") == edge_type:
+        return [data]
+    return []
+
+
+def _edge_weight_for_type(
+    graph: nx.MultiDiGraph,
+    source: str,
+    target: str,
+    edge_type: str,
+) -> Optional[float]:
+    attrs_list = _iter_edge_attrs_of_type(graph, source, target, edge_type)
+    if not attrs_list:
+        return None
+    return max(_extract_weight(attrs) for attrs in attrs_list)
+
+
 def _build_neighbor_payload(
     *,
-    graph: nx.DiGraph,
+    graph: nx.MultiDiGraph,
     neighbor: str,
     weight: float,
     via: Iterable[str] | None = None,
@@ -89,7 +117,7 @@ class GetCallGraphContextTool:
         resolved = self.graph_path.expanduser().resolve()
         object.__setattr__(self, "graph_path", resolved)
 
-    def _iter_file_members(self, graph: nx.DiGraph, file_path: str) -> Iterable[str]:
+    def _iter_file_members(self, graph: nx.MultiDiGraph, file_path: str) -> Iterable[str]:
         for node, attrs in graph.nodes(data=True):
             if attrs.get("file_path") != file_path:
                 continue
@@ -99,7 +127,7 @@ class GetCallGraphContextTool:
 
     def _aggregate_file_neighbors(
         self,
-        graph: nx.DiGraph,
+        graph: nx.MultiDiGraph,
         *,
         file_path: str,
         direction: str,
@@ -112,14 +140,15 @@ class GetCallGraphContextTool:
         for member in self._iter_file_members(graph, file_path):
             if direction == "outgoing":
                 iterator = graph.successors(member)
-                edge_lookup = lambda neighbor: graph.get_edge_data(member, neighbor, {})
+                weight_lookup = lambda neighbor: _edge_weight_for_type(graph, member, neighbor, "CALLS")
             else:
                 iterator = graph.predecessors(member)
-                edge_lookup = lambda neighbor: graph.get_edge_data(neighbor, member, {})
+                weight_lookup = lambda neighbor: _edge_weight_for_type(graph, neighbor, member, "CALLS")
 
             for neighbor in iterator:
-                edge_attrs = edge_lookup(neighbor)
-                weight = _extract_weight(edge_attrs)
+                weight = weight_lookup(neighbor)
+                if weight is None:
+                    continue
                 if weight < 0.0:
                     continue
                 payload = accumulator.setdefault(
@@ -146,11 +175,13 @@ class GetCallGraphContextTool:
             reverse=True,
         )
 
-    def _collect_calls(self, graph: nx.DiGraph, node_id: str) -> List[Dict[str, Any]]:
+    def _collect_calls(self, graph: nx.MultiDiGraph, node_id: str) -> List[Dict[str, Any]]:
         downstream: List[Dict[str, Any]] = []
         for neighbor in graph.successors(node_id):
-            edge_attrs = graph.get_edge_data(node_id, neighbor, {})
-            weight = _extract_weight(edge_attrs)
+            call_edges = _iter_edge_attrs_of_type(graph, node_id, neighbor, "CALLS")
+            if not call_edges:
+                continue
+            weight = max(_extract_weight(attrs) for attrs in call_edges)
             downstream.append(
                 _build_neighbor_payload(
                     graph=graph,
@@ -178,11 +209,13 @@ class GetCallGraphContextTool:
             direction="outgoing",
         )
 
-    def _collect_callers(self, graph: nx.DiGraph, node_id: str) -> List[Dict[str, Any]]:
+    def _collect_callers(self, graph: nx.MultiDiGraph, node_id: str) -> List[Dict[str, Any]]:
         upstream: List[Dict[str, Any]] = []
         for neighbor in graph.predecessors(node_id):
-            edge_attrs = graph.get_edge_data(neighbor, node_id, {})
-            weight = _extract_weight(edge_attrs)
+            call_edges = _iter_edge_attrs_of_type(graph, neighbor, node_id, "CALLS")
+            if not call_edges:
+                continue
+            weight = max(_extract_weight(attrs) for attrs in call_edges)
             upstream.append(
                 _build_neighbor_payload(
                     graph=graph,

@@ -18,7 +18,7 @@ DEFAULT_GRAPH_PATH = Path("results/graphs/call_graph.json")
 
 
 @lru_cache(maxsize=1)
-def _load_cached_graph(path: str) -> nx.DiGraph:
+def _load_cached_graph(path: str) -> nx.MultiDiGraph:
     """Load and cache the call graph to minimise repeated disk access."""
     return load_graph_from_json(path)
 
@@ -89,4 +89,3 @@ __all__ = [
     "build_get_node_details_tool",
     "get_node_details_tool",
 ]
-

@@ -24,9 +24,24 @@ SUPPORTED_SCORING_METHODS = {DEFAULT_SCORING_METHOD}
 
 
 @lru_cache(maxsize=1)
-def _load_cached_graph(path: str) -> nx.DiGraph:
+def _load_cached_graph(path: str) -> nx.MultiDiGraph:
     """Load and cache the call graph to avoid repeated disk I/O."""
     return load_graph_from_json(path)
+
+
+def _call_successors(graph: nx.MultiDiGraph, node_id: str) -> List[str]:
+    neighbors: List[str] = []
+    for neighbor in graph.successors(node_id):
+        edge_data = graph.get_edge_data(node_id, neighbor)
+        if not edge_data:
+            continue
+        if graph.is_multigraph():
+            if any(attrs.get("type") == "CALLS" for attrs in edge_data.values()):
+                neighbors.append(neighbor)
+        else:
+            if edge_data.get("type") == "CALLS":
+                neighbors.append(neighbor)
+    return neighbors
 
 
 def _normalise_category(node_attrs: Dict[str, Any]) -> str:
@@ -37,7 +52,7 @@ def _normalise_category(node_attrs: Dict[str, Any]) -> str:
 
 
 def _score_weighted_traffic(
-    graph: nx.DiGraph,
+    graph: nx.MultiDiGraph,
     neighbors: List[str],
 ) -> Dict[str, float]:
     """
@@ -58,7 +73,7 @@ def _score_weighted_traffic(
 
 
 def _compute_scores(
-    graph: nx.DiGraph,
+    graph: nx.MultiDiGraph,
     neighbors: List[str],
     scoring_method: str,
 ) -> Dict[str, float]:
@@ -112,7 +127,7 @@ class EvaluateNeighborsTool:
         if node_id not in graph:
             raise ValueError(f"Node '{node_id}' does not exist in the call graph.")
 
-        neighbors = list(graph.successors(node_id))
+        neighbors = _call_successors(graph, node_id)
         if not neighbors:
             return []
 

@@ -29,9 +29,32 @@ CATEGORY_RANK_MULTIPLIER: Dict[str, float] = {
 
 
 @lru_cache(maxsize=1)
-def _load_cached_graph(path: str) -> nx.DiGraph:
+def _load_cached_graph(path: str) -> nx.MultiDiGraph:
     """Load and cache the call graph to avoid repeated disk I/O."""
     return load_graph_from_json(path)
+
+
+def _build_call_edge_graph(graph: nx.MultiDiGraph) -> nx.DiGraph:
+    """Project the multi-graph onto a weighted DiGraph using CALL edges only."""
+    call_graph = nx.DiGraph()
+    for node, attrs in graph.nodes(data=True):
+        call_graph.add_node(node, **attrs)
+
+    for source, target, data in graph.edges(data=True):
+        if data.get("type") != "CALLS":
+            continue
+        raw_weight = data.get(WEIGHT_ATTR, DEFAULT_EDGE_WEIGHT)
+        try:
+            weight = float(raw_weight)
+        except (TypeError, ValueError):
+            weight = float(DEFAULT_EDGE_WEIGHT)
+        weight = max(weight, 0.0)
+        if call_graph.has_edge(source, target):
+            call_graph[source][target][WEIGHT_ATTR] += weight
+        else:
+            call_graph.add_edge(source, target, **{WEIGHT_ATTR: weight})
+
+    return call_graph
 
 
 class PageRankInput(BaseModel):
@@ -43,25 +66,26 @@ class PageRankInput(BaseModel):
     )
 
 
-def _compute_pagerank(graph: nx.DiGraph) -> Dict[str, float]:
+def _compute_pagerank(graph: nx.MultiDiGraph) -> Dict[str, float]:
     """Compute PageRank scores for the provided graph using weighted edges."""
-    if graph.number_of_nodes() == 0:
+    call_graph = _build_call_edge_graph(graph)
+    if call_graph.number_of_nodes() == 0:
         return {}
 
     damping = 0.85
     max_iter = 100
     tol = 1.0e-6
 
-    nodes: List[str] = list(graph.nodes())
+    nodes: List[str] = list(call_graph.nodes())
     node_count = len(nodes)
     initial_rank = 1.0 / node_count
     ranks: Dict[str, float] = {node: initial_rank for node in nodes}
 
     predecessors: Dict[str, List[str]] = {
-        node: list(graph.predecessors(node)) for node in nodes
+        node: list(call_graph.predecessors(node)) for node in nodes
     }
     successors: Dict[str, List[str]] = {
-        node: list(graph.successors(node)) for node in nodes
+        node: list(call_graph.successors(node)) for node in nodes
     }
 
     edge_weights: Dict[Tuple[str, str], float] = {}
@@ -69,7 +93,7 @@ def _compute_pagerank(graph: nx.DiGraph) -> Dict[str, float]:
     for source in nodes:
         total = 0.0
         for target in successors[source]:
-            raw_weight = graph[source][target].get(WEIGHT_ATTR, DEFAULT_EDGE_WEIGHT)
+            raw_weight = call_graph[source][target].get(WEIGHT_ATTR, DEFAULT_EDGE_WEIGHT)
             try:
                 weight = float(raw_weight)
             except (TypeError, ValueError):
@@ -138,7 +162,7 @@ def _compute_pagerank(graph: nx.DiGraph) -> Dict[str, float]:
 def _format_node_entry(
     node_id: str,
     score: float,
-    graph: nx.DiGraph,
+    graph: nx.MultiDiGraph,
 ) -> Dict[str, Any]:
     """Produce a serialisable representation of a graph node."""
     node_attrs = graph.nodes[node_id]

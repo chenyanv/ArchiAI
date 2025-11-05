@@ -459,11 +459,15 @@ def _is_logging_or_metric_call(call_name: str) -> bool:
 
 
 def _compute_edge_weight(
-    graph: nx.DiGraph,
+    graph: nx.MultiDiGraph,
     source: str,
     target: str,
     attrs: Dict[str, Any],
 ) -> float:
+    edge_type = attrs.get("type")
+    if edge_type != "CALLS":
+        return 0.0
+
     source_data = graph.nodes.get(source, {})
     target_data = graph.nodes.get(target, {})
 
@@ -484,7 +488,15 @@ def _compute_edge_weight(
     if target_data.get("kind") == "file":
         weight = min(weight, FILE_NODE_WEIGHT_CAP)
 
-    call_name = str(attrs.get("call") or "").lower()
+    call_sites = attrs.get("call_sites") or []
+    call_name = ""
+    if call_sites:
+        first = call_sites[0]
+        if isinstance(first, dict):
+            call_name = str(first.get("expression", "")).lower()
+        else:
+            call_name = str(first).lower()
+
     if _is_logging_or_metric_call(call_name):
         weight = min(weight, LOGGING_WEIGHT_CAP)
 
@@ -494,7 +506,7 @@ def _compute_edge_weight(
     return max(weight, 0.0)
 
 
-def load_graph_from_json(json_path: str) -> nx.DiGraph:
+def load_graph_from_json(json_path: str) -> nx.MultiDiGraph:
     """
     Load the call graph stored in ``json_path`` into a NetworkX DiGraph.
 
@@ -512,7 +524,7 @@ def load_graph_from_json(json_path: str) -> nx.DiGraph:
     with path.open("r", encoding="utf-8") as fp:
         graph_data: Dict[str, Any] = json.load(fp)
 
-    graph = nx.DiGraph(name=path.stem)
+    graph = nx.MultiDiGraph(name=path.stem)
 
     nodes_data: Iterable[Dict[str, Any]] = graph_data.get("nodes", [])
     missing_ids = 0
@@ -539,9 +551,17 @@ def load_graph_from_json(json_path: str) -> nx.DiGraph:
             for key, value in edge_info.items()
             if key not in {"source", "target"}
         }
+        edge_type = attrs.get("type") or "UNKNOWN"
+        attrs["type"] = edge_type
         weight = _compute_edge_weight(graph, source, target, attrs)
         attrs["weight"] = weight
-        graph.add_edge(source, target, **attrs)
+        existing = graph.get_edge_data(source, target) or {}
+        key = edge_type
+        suffix = 1
+        while key in existing:
+            key = f"{edge_type}:{suffix}"
+            suffix += 1
+        graph.add_edge(source, target, key=key, **attrs)
 
     unresolved_calls = graph_data.get("unresolved_calls")
     if unresolved_calls is not None:
@@ -562,7 +582,7 @@ def load_graph_from_json(json_path: str) -> nx.DiGraph:
     return graph
 
 
-def sanity_check(graph: nx.DiGraph, test_node: str, limit: int = 5) -> None:
+def sanity_check(graph: nx.MultiDiGraph, test_node: str, limit: int = 5) -> None:
     """
     Print a lightweight sanity check summary for ``test_node``.
     """
@@ -573,8 +593,23 @@ def sanity_check(graph: nx.DiGraph, test_node: str, limit: int = 5) -> None:
     print("\n--- 开始进行健全性检查 ---")
     if graph.has_node(test_node):
         print(f"✅ 成功找到测试节点: {test_node}")
-        callees = list(graph.successors(test_node))
-        callers = list(graph.predecessors(test_node))
+        callees: List[str] = []
+        for neighbor in graph.successors(test_node):
+            edge_data = graph.get_edge_data(test_node, neighbor)
+            if not edge_data:
+                continue
+            attrs_iter = edge_data.values() if graph.is_multigraph() else [edge_data]
+            if any(attrs.get("type") == "CALLS" for attrs in attrs_iter):
+                callees.append(neighbor)
+
+        callers: List[str] = []
+        for neighbor in graph.predecessors(test_node):
+            edge_data = graph.get_edge_data(neighbor, test_node)
+            if not edge_data:
+                continue
+            attrs_iter = edge_data.values() if graph.is_multigraph() else [edge_data]
+            if any(attrs.get("type") == "CALLS" for attrs in attrs_iter):
+                callers.append(neighbor)
         print(f"   -> 它调用了 ({len(callees)} 个): {callees[:limit]}")
         print(f"   -> 它被 ({len(callers)} 个) 调用: {callers[:limit]}")
     else:
