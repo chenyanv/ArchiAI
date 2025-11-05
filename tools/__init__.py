@@ -8,6 +8,10 @@ from .evaluate_neighbors import (  # noqa: F401
     build_evaluate_neighbors_tool,
     evaluate_neighbors_tool,
 )
+from .get_node_details import (  # noqa: F401
+    build_get_node_details_tool,
+    get_node_details_tool,
+)
 from .get_call_graph_context import (  # noqa: F401
     build_get_call_graph_context_tool,
     get_call_graph_context_tool,
@@ -30,6 +34,8 @@ __all__ = [
     "call_graph_pagerank_tool",
     "build_evaluate_neighbors_tool",
     "evaluate_neighbors_tool",
+    "build_get_node_details_tool",
+    "get_node_details_tool",
     "build_get_call_graph_context_tool",
     "get_call_graph_context_tool",
     "build_list_entry_point_tool",
