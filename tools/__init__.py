@@ -4,9 +4,21 @@ from .call_graph_pagerank import (  # noqa: F401
     build_call_graph_pagerank_tool,
     call_graph_pagerank_tool,
 )
+from .find_paths import (  # noqa: F401
+    build_find_paths_tool,
+    find_paths_tool,
+)
+from .find_relatives import (  # noqa: F401
+    build_find_relatives_tool,
+    find_relatives_tool,
+)
 from .evaluate_neighbors import (  # noqa: F401
     build_evaluate_neighbors_tool,
     evaluate_neighbors_tool,
+)
+from .get_neighbors import (  # noqa: F401
+    build_get_neighbors_tool,
+    get_neighbors_tool,
 )
 from .get_node_details import (  # noqa: F401
     build_get_node_details_tool,
@@ -32,8 +44,14 @@ from .get_source_code import (  # noqa: F401
 __all__ = [
     "build_call_graph_pagerank_tool",
     "call_graph_pagerank_tool",
+    "build_find_paths_tool",
+    "find_paths_tool",
+    "build_find_relatives_tool",
+    "find_relatives_tool",
     "build_evaluate_neighbors_tool",
     "evaluate_neighbors_tool",
+    "build_get_neighbors_tool",
+    "get_neighbors_tool",
     "build_get_node_details_tool",
     "get_node_details_tool",
     "build_get_call_graph_context_tool",
