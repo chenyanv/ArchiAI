@@ -4,6 +4,7 @@ from .graph import build_component_agent, run_component_agent
 from .schemas import (
     ComponentDrilldownRequest,
     ComponentDrilldownResponse,
+    coerce_subagent_payload,
     NavigationAction,
     NavigationActionKind,
     NavigationBreadcrumb,
@@ -18,6 +19,7 @@ __all__ = [
     "run_component_agent",
     "ComponentDrilldownRequest",
     "ComponentDrilldownResponse",
+    "coerce_subagent_payload",
     "NavigationAction",
     "NavigationActionKind",
     "NavigationBreadcrumb",

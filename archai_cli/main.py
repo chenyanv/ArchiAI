@@ -12,6 +12,7 @@ from component_agent import (
     ComponentDrilldownRequest,
     NavigationBreadcrumb,
     NavigationNode,
+    coerce_subagent_payload,
     run_component_agent,
 )
 from component_agent.toolkit import DEFAULT_SUBAGENT_TOOLS
@@ -71,6 +72,58 @@ def _write_plan(plan: Dict[str, Any], path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as handle:
         json.dump(plan, handle, ensure_ascii=False, indent=2)
+
+
+def _load_plan(path: Path) -> Optional[Dict[str, Any]]:
+    if not path.exists():
+        return None
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"Unable to load cached orchestration plan from {path}: {exc}")
+        return None
+    if not isinstance(data, dict):
+        print(f"Cached plan at {path} is not a JSON object; ignoring it.")
+        return None
+    return data
+
+
+def _serialise_for_log(value: Any, limit: int = 600) -> str:
+    try:
+        rendered = json.dumps(value, ensure_ascii=False)
+    except TypeError:
+        rendered = repr(value)
+    if len(rendered) <= limit:
+        return rendered
+    return rendered[:limit] + "…"
+
+
+def _tool_usage_logger(tool_name: str, args: Dict[str, Any], result: Any) -> None:
+    print("\n=== AGENT TOOL INVOCATION ===")
+    print(f"Tool   : {tool_name}")
+    print(f"Args   : {_serialise_for_log(args)}")
+    print(f"Result : {_serialise_for_log(result)}")
+    print("=== END TOOL INVOCATION ===")
+
+
+def _llm_input_logger(messages: List[Dict[str, Any]]) -> None:
+    try:
+        rendered = json.dumps(messages, ensure_ascii=False, indent=2)
+    except TypeError:
+        rendered = _serialise_for_log(messages, limit=4000)
+    print("\n=== LLM INPUT CONTEXT ===")
+    print(rendered)
+    print("=== END LLM INPUT ===")
+
+
+def _normalise_card_payload(card: Dict[str, Any]) -> Dict[str, Any]:
+    payload = coerce_subagent_payload(card)
+    if payload is not None:
+        card["subagent_payload"] = payload
+    elif not card.get("subagent_payload"):
+        card.pop("subagent_payload", None)
+    return card
 
 
 def _print_component_listing(cards: Sequence[Dict[str, Any]]) -> None:
@@ -280,13 +333,15 @@ def _browse_component(card: Dict[str, Any], database_url: Optional[str], *, debu
         request = ComponentDrilldownRequest(
             component_card=card,
             breadcrumbs=breadcrumbs,
-            subagent_payload=card.get("subagent_payload"),
+            subagent_payload=coerce_subagent_payload(card),
             database_url=database_url,
         )
         response = run_component_agent(
             request,
             debug=debug_agent,
             logger=_agent_logger if debug_agent else None,
+            log_tool_usage=_tool_usage_logger,
+            log_llm_input=_llm_input_logger,
         )
         nodes = response.next_layer.nodes
         _print_next_layer(
@@ -320,10 +375,19 @@ def _browse_component(card: Dict[str, Any], database_url: Optional[str], *, debu
 
 def main() -> None:
     args = _parse_args()
-    print("Running orchestration agent...")
-    plan = run_orchestration_agent()
-    _write_plan(plan, args.plan_path)
-    cards = plan.get("component_cards") or []
+    plan = _load_plan(args.plan_path)
+    if plan and plan.get("component_cards"):
+        print(f"Loaded cached orchestration plan from {args.plan_path}.")
+    else:
+        if plan:
+            print(
+                f"Cached plan at {args.plan_path} has no component cards; re-running orchestration agent..."
+            )
+        else:
+            print("No cached orchestration plan found; running orchestration agent...")
+        plan = run_orchestration_agent()
+        _write_plan(plan, args.plan_path)
+    cards = [_normalise_card_payload(card) for card in (plan.get("component_cards") or [])]
     component_card = _select_component(cards, args.component_id)
     if component_card is None:
         print("No component selected. Bye!")
