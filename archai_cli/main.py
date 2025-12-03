@@ -29,6 +29,8 @@ class CLIArgs:
     database_url: Optional[str]
     component_id: Optional[str]
     debug_agent: bool
+    log_llm: bool
+    log_tools: bool
 
 
 def _parse_args() -> CLIArgs:
@@ -56,7 +58,17 @@ def _parse_args() -> CLIArgs:
     parser.add_argument(
         "--debug-agent",
         action="store_true",
-        help="Print agent/LLM/tool activity for each drilldown step.",
+        help="Print agent reasoning and goals.",
+    )
+    parser.add_argument(
+        "--log-llm",
+        action="store_true",
+        help="Print full LLM input context (verbose).",
+    )
+    parser.add_argument(
+        "--log-tools",
+        action="store_true",
+        help="Print tool invocations and results.",
     )
     args = parser.parse_args()
     plan_path = Path(args.plan_path).expanduser().resolve()
@@ -65,6 +77,8 @@ def _parse_args() -> CLIArgs:
         database_url=args.database_url,
         component_id=args.component_id,
         debug_agent=args.debug_agent,
+        log_llm=args.log_llm,
+        log_tools=args.log_tools,
     )
 
 
@@ -326,7 +340,14 @@ def _agent_logger(message: str) -> None:
     print(f"[agent] {message}")
 
 
-def _browse_component(card: Dict[str, Any], database_url: Optional[str], *, debug_agent: bool) -> None:
+def _browse_component(
+    card: Dict[str, Any],
+    database_url: Optional[str],
+    *,
+    debug_agent: bool,
+    log_llm: bool,
+    log_tools: bool
+) -> None:
     breadcrumbs: List[NavigationBreadcrumb] = []
     _render_component_overview(card)
     while True:
@@ -340,8 +361,8 @@ def _browse_component(card: Dict[str, Any], database_url: Optional[str], *, debu
             request,
             debug=debug_agent,
             logger=_agent_logger if debug_agent else None,
-            log_tool_usage=_tool_usage_logger,
-            log_llm_input=_llm_input_logger,
+            log_tool_usage=_tool_usage_logger if log_tools else None,
+            log_llm_input=_llm_input_logger if log_llm else None,
         )
         nodes = response.next_layer.nodes
         _print_next_layer(
@@ -392,7 +413,13 @@ def main() -> None:
     if component_card is None:
         print("No component selected. Bye!")
         return
-    _browse_component(component_card, args.database_url, debug_agent=args.debug_agent)
+    _browse_component(
+        component_card,
+        args.database_url,
+        debug_agent=args.debug_agent,
+        log_llm=args.log_llm,
+        log_tools=args.log_tools,
+    )
 
 
 if __name__ == "__main__":  # pragma: no cover
