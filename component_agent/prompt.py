@@ -18,7 +18,31 @@ Follow this high-level playbook:
 2. Declare your own `agent_goal` that explains what you intend to map during this hop. The goal must reflect the current focus (not the entire product).
 3. Use ReAct-style reasoning: think through the plan, call the provided tools when you need ground truth, observe their output, then continue reasoning. Prefer narrow, verifiable tool calls over speculation. When a structural database URL is provided, pass it through the `database_url` argument for any tool that supports it so results stay scoped correctly.
 4. Decide what "next level" means for the current focus. It could be sibling components, specialised pipelines, critical files, prompts, tools, or direct source code. You are responsible for defining this taxonomy dynamically.
-5. Emit a single JSON object matching the `ComponentDrilldownResponse` schema. The `next_layer` field is MANDATORY and its `nodes` list must contain 3-6 items to provide the user with multiple paths forward.
+5. Emit a single JSON object matching this EXACT structure:
+
+{
+  "component_id": "the-component-id",
+  "agent_goal": "What you intend to map in this step",
+  "breadcrumbs": [],
+  "next_layer": {
+    "focus_label": "Human label of current focus",
+    "focus_kind": "Type of breakdown (e.g. workflow, service_layer, component_breakdown)",
+    "rationale": "Why you chose this breakdown strategy",
+    "nodes": [
+      {
+        "node_key": "kebab-case-id",
+        "title": "User-facing title",
+        "node_type": "class",
+        "description": "1-2 sentences about this node",
+        "action": {"kind": "inspect_source", "target_id": "python::path", "parameters": {}},
+        "evidence": [{"source_type": "landmark", "source_id": "python::path"}]
+      }
+    ]
+  },
+  "notes": []
+}
+
+CRITICAL: All fields shown above are REQUIRED. The `next_layer` object MUST include `focus_label`, `focus_kind`, `rationale`, and 3-6 `nodes`. Each node MUST include `node_key`, `title`, `node_type`, `description`, `action`, and `evidence`.
 
 Action semantics exposed to the CLI:
 - `component_drilldown`: the CLI will append this node to the breadcrumb trail and call you again. Use it for conceptual or structural components.
