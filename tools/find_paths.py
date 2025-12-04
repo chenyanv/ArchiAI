@@ -4,10 +4,10 @@ Trace simple paths between node sets while respecting call graph edge types.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
+from langchain_core.tools import tool
 from pydantic import BaseModel, Field, validator
 
 from .graph_queries import (
@@ -57,160 +57,121 @@ class FindPathsInput(BaseModel):
         return cleaned
 
 
-@dataclass(frozen=True)
-class FindPathsTool:
-    graph_path: Path
-    name: str = "find_paths"
-    description: str = (
-        "Return simple paths between the provided start and end node sets. "
-        "Traversal respects the requested edge types and stops once the "
-        "depth or path limits are hit."
-    )
-    args_schema = FindPathsInput
+def _search_paths(
+    graph,
+    *,
+    start: str,
+    targets: Set[str],
+    edge_filter: Sequence[str],
+    max_depth: int,
+    max_paths: int,
+) -> List[Dict[str, Any]]:
+    if not targets:
+        return []
 
-    def __post_init__(self) -> None:
-        resolved = self.graph_path.expanduser().resolve()
-        object.__setattr__(self, "graph_path", resolved)
+    snapshots_cache: Dict[str, Dict[str, Any]] = {}
 
-    def invoke(self, payload: Mapping[str, Any]) -> List[Dict[str, Any]]:
-        if isinstance(payload, FindPathsInput):
-            params = payload
-        elif isinstance(payload, Mapping):
-            params = self.args_schema(**payload)
-        else:
-            raise TypeError("Payload must be a mapping or FindPathsInput.")
-        return self._run(
-            start_nodes=params.start_nodes,
-            end_nodes=params.end_nodes,
-            edge_types=params.edge_types or list(DEFAULT_EDGE_TYPES),
-            max_depth=params.max_depth,
-            max_paths=params.max_paths,
+    def snapshot(node_id: str) -> Dict[str, Any]:
+        if node_id not in snapshots_cache:
+            snapshots_cache[node_id] = node_snapshot(graph, node_id)
+        return snapshots_cache[node_id]
+
+    stack: List[Tuple[str, List[str], List[str]]] = [(start, [start], [])]
+    collected: List[Dict[str, Any]] = []
+
+    if start in targets:
+        collected.append(
+            {
+                "length": 0,
+                "nodes": [snapshot(start)],
+                "edge_types": [],
+            }
         )
+        if len(collected) >= max_paths:
+            return collected
 
-    __call__ = invoke
+    while stack:
+        current, path_nodes, edge_types_used = stack.pop()
+        if len(edge_types_used) >= max_depth:
+            continue
 
-    def _run(
-        self,
-        *,
-        start_nodes: Sequence[str],
-        end_nodes: Sequence[str],
-        edge_types: Sequence[str],
-        max_depth: int,
-        max_paths: int,
-    ) -> List[Dict[str, Any]]:
-        graph = load_graph_cached(self.graph_path)
-        edge_filter = tuple({edge_type.upper() for edge_type in edge_types if edge_type})
-        targets = {node for node in end_nodes if node in graph}
+        hops = _neighbor_hops(graph, current, edge_filter)
+        for hop in hops:
+            if hop.neighbor in path_nodes:
+                continue
+            next_nodes = path_nodes + [hop.neighbor]
+            next_edges = edge_types_used + [hop.edge_type]
 
-        results: List[Dict[str, Any]] = []
-        for start in start_nodes:
-            if start not in graph:
-                results.append(
+            if hop.neighbor in targets:
+                collected.append(
                     {
-                        "start": start,
-                        "error": "Node does not exist in the call graph.",
-                        "paths": [],
+                        "length": len(next_edges),
+                        "nodes": [snapshot(node) for node in next_nodes],
+                        "edge_types": list(next_edges),
                     }
                 )
-                continue
-            paths = self._search_paths(
-                graph,
-                start=start,
-                targets=targets,
-                edge_filter=edge_filter,
-                max_depth=max_depth,
-                max_paths=max_paths,
-            )
-            results.append({"start": start, "paths": paths})
-        return results
+                if len(collected) >= max_paths:
+                    return collected
 
-    def _search_paths(
-        self,
+            if len(next_edges) < max_depth:
+                stack.append((hop.neighbor, next_nodes, next_edges))
+
+    return collected
+
+
+def _neighbor_hops(
+    graph,
+    node_id: str,
+    edge_filter: Sequence[str],
+) -> Iterable[EdgeHop]:
+    return iter_neighbors_by_type(
         graph,
-        *,
-        start: str,
-        targets: Set[str],
-        edge_filter: Sequence[str],
-        max_depth: int,
-        max_paths: int,
-    ) -> List[Dict[str, Any]]:
-        if not targets:
-            return []
+        node_id,
+        edge_types=edge_filter,
+    )
 
-        snapshots_cache: Dict[str, Dict[str, Any]] = {}
 
-        def snapshot(node_id: str) -> Dict[str, Any]:
-            if node_id not in snapshots_cache:
-                snapshots_cache[node_id] = node_snapshot(graph, node_id)
-            return snapshots_cache[node_id]
+@tool(args_schema=FindPathsInput)
+def find_paths(
+    start_nodes: List[str],
+    end_nodes: List[str],
+    edge_types: Optional[List[str]] = None,
+    max_depth: int = 8,
+    max_paths: int = 25,
+) -> List[Dict[str, Any]]:
+    """Return simple paths between the provided start and end node sets.
 
-        stack: List[Tuple[str, List[str], List[str]]] = [(start, [start], [])]
-        collected: List[Dict[str, Any]] = []
+    Traversal respects the requested edge types and stops once the
+    depth or path limits are hit.
+    """
+    graph = load_graph_cached(DEFAULT_GRAPH_PATH)
+    edge_filter = tuple({edge_type.upper() for edge_type in (edge_types or list(DEFAULT_EDGE_TYPES)) if edge_type})
+    targets = {node for node in end_nodes if node in graph}
 
-        if start in targets:
-            collected.append(
+    results: List[Dict[str, Any]] = []
+    for start in start_nodes:
+        if start not in graph:
+            results.append(
                 {
-                    "length": 0,
-                    "nodes": [snapshot(start)],
-                    "edge_types": [],
+                    "start": start,
+                    "error": "Node does not exist in the call graph.",
+                    "paths": [],
                 }
             )
-            if len(collected) >= max_paths:
-                return collected
-
-        while stack:
-            current, path_nodes, edge_types_used = stack.pop()
-            if len(edge_types_used) >= max_depth:
-                continue
-
-            hops = self._neighbor_hops(graph, current, edge_filter)
-            for hop in hops:
-                if hop.neighbor in path_nodes:
-                    continue
-                next_nodes = path_nodes + [hop.neighbor]
-                next_edges = edge_types_used + [hop.edge_type]
-
-                if hop.neighbor in targets:
-                    collected.append(
-                        {
-                            "length": len(next_edges),
-                            "nodes": [snapshot(node) for node in next_nodes],
-                            "edge_types": list(next_edges),
-                        }
-                    )
-                    if len(collected) >= max_paths:
-                        return collected
-
-                if len(next_edges) < max_depth:
-                    stack.append((hop.neighbor, next_nodes, next_edges))
-
-        return collected
-
-    def _neighbor_hops(
-        self,
-        graph,
-        node_id: str,
-        edge_filter: Sequence[str],
-    ) -> Iterable[EdgeHop]:
-        return iter_neighbors_by_type(
+            continue
+        paths = _search_paths(
             graph,
-            node_id,
-            edge_types=edge_filter,
+            start=start,
+            targets=targets,
+            edge_filter=edge_filter,
+            max_depth=max_depth,
+            max_paths=max_paths,
         )
-
-
-def build_find_paths_tool(
-    graph_path: Path | str = DEFAULT_GRAPH_PATH,
-) -> FindPathsTool:
-    return FindPathsTool(Path(graph_path))
-
-
-find_paths_tool = build_find_paths_tool()
+        results.append({"start": start, "paths": paths})
+    return results
 
 
 __all__ = [
     "FindPathsInput",
-    "FindPathsTool",
-    "build_find_paths_tool",
-    "find_paths_tool",
+    "find_paths",
 ]

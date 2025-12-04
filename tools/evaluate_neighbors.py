@@ -7,17 +7,16 @@ domain knowledge must always drive the final decision.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Mapping
+from typing import Any, Dict, List
 
 import math
 import networkx as nx
+from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
-from tools.graph_cache import _load_cached_graph
-
-DEFAULT_GRAPH_PATH = Path("results/graphs/call_graph.json")
+from .graph_cache import _load_cached_graph
+from .graph_queries import DEFAULT_GRAPH_PATH
 DEFAULT_SCORING_METHOD = "weighted_traffic"
 SUPPORTED_SCORING_METHODS = {DEFAULT_SCORING_METHOD}
 
@@ -94,95 +93,70 @@ class EvaluateNeighborsInput(BaseModel):
     )
 
 
-@dataclass(frozen=True)
-class EvaluateNeighborsTool:
-    """Expose advisory neighbour rankings; downstream choices remain objective-driven."""
+def _evaluate_neighbors(
+    graph: nx.MultiDiGraph,
+    node_id: str,
+    scoring_method: str = DEFAULT_SCORING_METHOD,
+) -> List[Dict[str, Any]]:
+    if node_id not in graph:
+        raise ValueError(f"Node '{node_id}' does not exist in the call graph.")
 
-    graph_path: Path
-    name: str = "evaluate_neighbors"
-    description: str = (
-        "Suggest downstream neighbors for a call graph node, ranked by the selected "
-        "scoring method. Scores are advisory signals, not directives."
-    )
-    args_schema = EvaluateNeighborsInput
+    neighbors = _call_successors(graph, node_id)
+    if not neighbors:
+        return []
 
-    def __post_init__(self) -> None:
-        resolved = self.graph_path.expanduser().resolve()
-        object.__setattr__(self, "graph_path", resolved)
-
-    def _run(
-        self,
-        node_id: str,
-        scoring_method: str = DEFAULT_SCORING_METHOD,
-    ) -> List[Dict[str, Any]]:
-        graph = _load_cached_graph(str(self.graph_path))
-
-        if node_id not in graph:
-            raise ValueError(f"Node '{node_id}' does not exist in the call graph.")
-
-        neighbors = _call_successors(graph, node_id)
-        if not neighbors:
-            return []
-
-        method = (scoring_method or DEFAULT_SCORING_METHOD).strip().lower()
-        if method not in SUPPORTED_SCORING_METHODS:
-            raise ValueError(
-                f"Unsupported scoring_method '{scoring_method}'. "
-                f"Supported options: {', '.join(sorted(SUPPORTED_SCORING_METHODS))}."
-            )
-
-        scores = _compute_scores(graph, neighbors, method)
-
-        ranked_candidates = [
-            neighbor for neighbor in neighbors if scores.get(neighbor, 0.0) > 0.0
-        ]
-        if not ranked_candidates:
-            return []
-
-        ranked = sorted(
-            ranked_candidates,
-            key=lambda neighbor: (scores.get(neighbor, 0.0), neighbor),
-            reverse=True,
+    method = (scoring_method or DEFAULT_SCORING_METHOD).strip().lower()
+    if method not in SUPPORTED_SCORING_METHODS:
+        raise ValueError(
+            f"Unsupported scoring_method '{scoring_method}'. "
+            f"Supported options: {', '.join(sorted(SUPPORTED_SCORING_METHODS))}."
         )
 
-        results: List[Dict[str, Any]] = []
-        for neighbor in ranked:
-            node_attrs = graph.nodes[neighbor]
-            category = _normalise_category(node_attrs)
-            results.append(
-                {
-                    "id": neighbor,
-                    "score": scores.get(neighbor, 0.0),
-                    "category": category,
-                }
-            )
-        return results
+    scores = _compute_scores(graph, neighbors, method)
 
-    def invoke(self, payload: Mapping[str, Any]) -> List[Dict[str, Any]]:
-        if isinstance(payload, EvaluateNeighborsInput):
-            params = payload
-        elif isinstance(payload, Mapping):
-            params = self.args_schema(**payload)
-        else:
-            raise TypeError("Tool payload must be a mapping or EvaluateNeighborsInput.")
-        return self._run(params.node_id, params.scoring_method)
+    ranked_candidates = [
+        neighbor for neighbor in neighbors if scores.get(neighbor, 0.0) > 0.0
+    ]
+    if not ranked_candidates:
+        return []
 
-    def __call__(self, payload: Mapping[str, Any]) -> List[Dict[str, Any]]:
-        return self.invoke(payload)
+    ranked = sorted(
+        ranked_candidates,
+        key=lambda neighbor: (scores.get(neighbor, 0.0), neighbor),
+        reverse=True,
+    )
+
+    results: List[Dict[str, Any]] = []
+    for neighbor in ranked:
+        node_attrs = graph.nodes[neighbor]
+        category = _normalise_category(node_attrs)
+        results.append(
+            {
+                "id": neighbor,
+                "score": scores.get(neighbor, 0.0),
+                "category": category,
+            }
+        )
+    return results
 
 
-def build_evaluate_neighbors_tool(
-    graph_path: Path | str = DEFAULT_GRAPH_PATH,
-) -> EvaluateNeighborsTool:
-    """
-    Create a LangGraph-compatible tool that surfaces ranked downstream neighbors.
+@tool(args_schema=EvaluateNeighborsInput)
+def evaluate_neighbors(
+    node_id: str,
+    scoring_method: str = DEFAULT_SCORING_METHOD,
+) -> List[Dict[str, Any]]:
+    """Suggest downstream neighbors for a call graph node, ranked by the selected scoring method.
 
     The returned scores are advisory suggestions for sub-agents. They should combine
     these signals with domain knowledge (e.g. function names) before acting.
     When the next move is already dictated by the objective, the agent should
-    follow that plan rather than the ranking.
+    follow that plan rather than the ranking. Scores are advisory signals, not directives.
     """
-    return EvaluateNeighborsTool(Path(graph_path))
+    graph = _load_cached_graph(str(DEFAULT_GRAPH_PATH))
+    return _evaluate_neighbors(graph, node_id, scoring_method)
 
 
-evaluate_neighbors_tool = build_evaluate_neighbors_tool()
+__all__ = [
+    "EvaluateNeighborsInput",
+    "evaluate_neighbors",
+]

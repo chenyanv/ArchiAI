@@ -8,13 +8,13 @@ from langchain_core.tools import BaseTool
 
 from tools import (
     call_graph_pagerank_tool,
-    evaluate_neighbors_tool,
-    find_paths_tool,
-    find_relatives_tool,
-    get_call_graph_context_tool,
-    get_neighbors_tool,
-    get_node_details_tool,
-    get_source_code_tool,
+    evaluate_neighbors,
+    find_paths,
+    find_relatives,
+    get_call_graph_context,
+    get_neighbors,
+    get_node_details,
+    get_source_code,
     list_core_models,
     list_entry_point_tool,
 )
@@ -22,15 +22,15 @@ from tools import (
 
 DEFAULT_SUBAGENT_TOOLS: List[BaseTool] = [
     call_graph_pagerank_tool,
-    find_paths_tool,
-    find_relatives_tool,
-    evaluate_neighbors_tool,
-    get_neighbors_tool,
-    get_node_details_tool,
-    get_call_graph_context_tool,
+    find_paths,
+    find_relatives,
+    evaluate_neighbors,
+    get_neighbors,
+    get_node_details,
+    get_call_graph_context,
     list_entry_point_tool,
     list_core_models,
-    get_source_code_tool,
+    get_source_code,
 ]
 
 

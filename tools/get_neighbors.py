@@ -4,10 +4,10 @@ Graph Grep inspired helper that returns direct neighbors for one or more nodes.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 
+from langchain_core.tools import tool
 from pydantic import BaseModel, Field, validator
 
 from .graph_queries import (
@@ -61,132 +61,94 @@ class GetNeighborsInput(BaseModel):
         return direction
 
 
-@dataclass(frozen=True)
-class GetNeighborsTool:
-    graph_path: Path
-    name: str = "get_neighbors"
-    description: str = (
-        "Return the direct neighbors for one or more nodes. Supports inbound, outbound, "
-        "or bidirectional traversal as well as filtering by edge type and node attributes."
+def _collect_neighbors(
+    graph,
+    *,
+    node_id: str,
+    direction: str,
+    edge_types: Optional[Sequence[str]],
+    filters: Optional[Dict[str, Any]],
+    max_neighbors: Optional[int],
+) -> List[Dict[str, Any]]:
+    payloads: List[Dict[str, Any]] = []
+    directions = (
+        ("out",)
+        if direction == "out"
+        else ("in",) if direction == "in" else ("out", "in")
     )
-    args_schema = GetNeighborsInput
-
-    def __post_init__(self) -> None:
-        resolved = self.graph_path.expanduser().resolve()
-        object.__setattr__(self, "graph_path", resolved)
-
-    def invoke(self, payload: Mapping[str, Any]) -> List[Dict[str, Any]]:
-        if isinstance(payload, GetNeighborsInput):
-            params = payload
-        elif isinstance(payload, Mapping):
-            params = self.args_schema(**payload)
-        else:
-            raise TypeError("Payload must be a mapping or GetNeighborsInput.")
-        return self._run(
-            nodes=params.nodes,
-            direction=params.direction,
-            edge_types=params.edge_types,
-            filters=params.filter_by_attributes,
-            max_neighbors=params.max_neighbors,
-        )
-
-    __call__ = invoke
-
-    def _run(
-        self,
-        *,
-        nodes: Sequence[str],
-        direction: str,
-        edge_types: Optional[Sequence[str]],
-        filters: Optional[Mapping[str, Any]],
-        max_neighbors: Optional[int],
-    ) -> List[Dict[str, Any]]:
-        graph = load_graph_cached(self.graph_path)
-        summaries: List[Dict[str, Any]] = []
-        for node_id in nodes:
-            if node_id not in graph:
-                summaries.append(
-                    {
-                        "node_id": node_id,
-                        "error": "Node does not exist in the call graph.",
-                        "neighbors": [],
-                    }
-                )
-                continue
-            neighbors = self._collect_neighbors(
+    for dir_key in directions:
+        try:
+            bundles = iter_edge_bundles(
                 graph,
-                node_id=node_id,
-                direction=direction,
+                node_id,
+                direction=dir_key,
                 edge_types=edge_types,
-                filters=filters,
-                max_neighbors=max_neighbors,
             )
-            summaries.append({"node_id": node_id, "neighbors": neighbors})
-        return summaries
-
-    def _collect_neighbors(
-        self,
-        graph,
-        *,
-        node_id: str,
-        direction: str,
-        edge_types: Optional[Sequence[str]],
-        filters: Optional[Mapping[str, Any]],
-        max_neighbors: Optional[int],
-    ) -> List[Dict[str, Any]]:
-        payloads: List[Dict[str, Any]] = []
-        directions = (
-            ("out",)
-            if direction == "out"
-            else ("in",) if direction == "in" else ("out", "in")
-        )
-        for dir_key in directions:
-            try:
-                bundles = iter_edge_bundles(
-                    graph,
-                    node_id,
-                    direction=dir_key,
-                    edge_types=edge_types,
-                )
-            except ValueError:
+        except ValueError:
+            continue
+        for neighbor_id, edge_bundle in bundles:
+            neighbor_attrs = graph.nodes[neighbor_id]
+            if not matches_attributes(neighbor_attrs, filters):
                 continue
-            for neighbor_id, edge_bundle in bundles:
-                neighbor_attrs = graph.nodes[neighbor_id]
-                if not matches_attributes(neighbor_attrs, filters):
-                    continue
-                snapshot = node_snapshot(graph, neighbor_id)
-                snapshot.update(
-                    {
-                        "direction": "outgoing" if dir_key == "out" else "incoming",
-                        "edge_types": collect_edge_types(edge_bundle),
-                        "edge_count": len(edge_bundle),
-                        "weight": aggregate_weight(edge_bundle),
-                    }
-                )
-                payloads.append(snapshot)
+            snapshot = node_snapshot(graph, neighbor_id)
+            snapshot.update(
+                {
+                    "direction": "outgoing" if dir_key == "out" else "incoming",
+                    "edge_types": collect_edge_types(edge_bundle),
+                    "edge_count": len(edge_bundle),
+                    "weight": aggregate_weight(edge_bundle),
+                }
+            )
+            payloads.append(snapshot)
 
-        payloads.sort(
-            key=lambda entry: (entry.get("weight", 0.0), entry["id"]),
-            reverse=True,
+    payloads.sort(
+        key=lambda entry: (entry.get("weight", 0.0), entry["id"]),
+        reverse=True,
+    )
+    if max_neighbors:
+        return payloads[: max_neighbors]
+    return payloads
+
+
+@tool(args_schema=GetNeighborsInput)
+def get_neighbors(
+    nodes: List[str],
+    direction: str = "out",
+    edge_types: Optional[List[str]] = None,
+    filter_by_attributes: Optional[Dict[str, Any]] = None,
+    max_neighbors: Optional[int] = 25,
+) -> List[Dict[str, Any]]:
+    """Return the direct neighbors for one or more nodes.
+
+    Supports inbound, outbound, or bidirectional traversal as well as filtering
+    by edge type and node attributes.
+    """
+    graph = load_graph_cached(DEFAULT_GRAPH_PATH)
+    summaries: List[Dict[str, Any]] = []
+    for node_id in nodes:
+        if node_id not in graph:
+            summaries.append(
+                {
+                    "node_id": node_id,
+                    "error": "Node does not exist in the call graph.",
+                    "neighbors": [],
+                }
+            )
+            continue
+        neighbors = _collect_neighbors(
+            graph,
+            node_id=node_id,
+            direction=direction,
+            edge_types=edge_types,
+            filters=filter_by_attributes,
+            max_neighbors=max_neighbors,
         )
-        if max_neighbors:
-            return payloads[: max_neighbors]
-        return payloads
-
-
-def build_get_neighbors_tool(
-    graph_path: Path | str = DEFAULT_GRAPH_PATH,
-) -> GetNeighborsTool:
-    return GetNeighborsTool(Path(graph_path))
-
-
-get_neighbors_tool = build_get_neighbors_tool()
+        summaries.append({"node_id": node_id, "neighbors": neighbors})
+    return summaries
 
 
 __all__ = [
     "GetNeighborsInput",
-    "GetNeighborsTool",
-    "build_get_neighbors_tool",
-    "get_neighbors_tool",
+    "get_neighbors",
 ]
 

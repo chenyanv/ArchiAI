@@ -4,16 +4,15 @@ LangGraph tool for returning the stored attributes of a call graph node.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Mapping
+from typing import Any, Dict
 
 import networkx as nx
+from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
-from tools.graph_cache import _load_cached_graph
-
-DEFAULT_GRAPH_PATH = Path("results/graphs/call_graph.json")
+from .graph_cache import _load_cached_graph
+from .graph_queries import DEFAULT_GRAPH_PATH
 
 
 class GetNodeDetailsInput(BaseModel):
@@ -24,61 +23,26 @@ class GetNodeDetailsInput(BaseModel):
     )
 
 
-@dataclass(frozen=True)
-class GetNodeDetailsTool:
+def _get_node_details(graph: nx.MultiDiGraph, node_id: str) -> Dict[str, Any]:
+    if node_id not in graph:
+        raise ValueError(f"Node '{node_id}' does not exist in the call graph.")
+    node_attrs = dict(graph.nodes[node_id])
+    node_attrs.setdefault("id", node_id)
+    node_attrs["id"] = node_id
+    return node_attrs
+
+
+@tool(args_schema=GetNodeDetailsInput)
+def get_node_details(node_id: str) -> Dict[str, Any]:
+    """Return the attribute dictionary captured for a call graph node.
+
+    Returns the data recorded in the call_graph.json export for the specified node.
     """
-    Look up the stored call graph attributes for a single node.
-    """
-
-    graph_path: Path
-    name: str = "get_node_details"
-    description: str = (
-        "Return the attribute dictionary captured for a call graph node, "
-        "matching the data recorded in the call_graph.json export."
-    )
-    args_schema = GetNodeDetailsInput
-
-    def __post_init__(self) -> None:
-        resolved = self.graph_path.expanduser().resolve()
-        object.__setattr__(self, "graph_path", resolved)
-
-    def _run(self, node_id: str) -> Dict[str, Any]:
-        graph = _load_cached_graph(str(self.graph_path))
-        if node_id not in graph:
-            raise ValueError(f"Node '{node_id}' does not exist in the call graph.")
-        node_attrs = dict(graph.nodes[node_id])
-        node_attrs.setdefault("id", node_id)
-        node_attrs["id"] = node_id
-        return node_attrs
-
-    def invoke(self, payload: Mapping[str, Any]) -> Dict[str, Any]:
-        if isinstance(payload, GetNodeDetailsInput):
-            params = payload
-        elif isinstance(payload, Mapping):
-            params = self.args_schema(**payload)
-        else:
-            raise TypeError("Tool payload must be a mapping or GetNodeDetailsInput.")
-        return self._run(params.node_id)
-
-    def __call__(self, payload: Mapping[str, Any]) -> Dict[str, Any]:
-        return self.invoke(payload)
-
-
-def build_get_node_details_tool(
-    graph_path: Path | str = DEFAULT_GRAPH_PATH,
-) -> GetNodeDetailsTool:
-    """
-    Create a LangGraph-compatible tool for fetching node attribute metadata.
-    """
-    return GetNodeDetailsTool(Path(graph_path))
-
-
-get_node_details_tool = build_get_node_details_tool()
+    graph = _load_cached_graph(str(DEFAULT_GRAPH_PATH))
+    return _get_node_details(graph, node_id)
 
 
 __all__ = [
     "GetNodeDetailsInput",
-    "GetNodeDetailsTool",
-    "build_get_node_details_tool",
-    "get_node_details_tool",
+    "get_node_details",
 ]
