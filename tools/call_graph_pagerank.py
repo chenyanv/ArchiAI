@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
@@ -8,7 +7,8 @@ import networkx as nx
 from pydantic import BaseModel, Field
 from langchain_core.tools import StructuredTool
 
-from load_graph import DEFAULT_EDGE_WEIGHT, load_graph_from_json
+from load_graph import DEFAULT_EDGE_WEIGHT
+from tools.graph_cache import _load_cached_graph
 
 DEFAULT_GRAPH_PATH = Path("results/graphs/call_graph.json")
 WEIGHT_ATTR = "weight"
@@ -26,12 +26,6 @@ CATEGORY_RANK_MULTIPLIER: Dict[str, float] = {
     "implementation": 1.0,
     "unknown": 1.0,
 }
-
-
-@lru_cache(maxsize=1)
-def _load_cached_graph(path: str) -> nx.MultiDiGraph:
-    """Load and cache the call graph to avoid repeated disk I/O."""
-    return load_graph_from_json(path)
 
 
 def _build_call_edge_graph(graph: nx.MultiDiGraph) -> nx.DiGraph:

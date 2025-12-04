@@ -506,16 +506,21 @@ def _compute_edge_weight(
     return max(weight, 0.0)
 
 
-def load_graph_from_json(json_path: str) -> nx.MultiDiGraph:
+def load_graph_from_json(json_path: str, verbose: bool = True) -> nx.MultiDiGraph:
     """
     Load the call graph stored in ``json_path`` into a NetworkX DiGraph.
 
     The JSON is expected to contain ``nodes`` and ``edges`` collections as produced
     by the structural scaffolding pipeline. Optional keys (such as
     ``unresolved_calls``) are stored on ``graph.graph`` for later inspection.
+
+    Args:
+        json_path: Path to the JSON file containing the graph data
+        verbose: If True, print loading progress messages. Defaults to True.
     """
     path = Path(json_path)
-    print(f"开始从 {path} 加载图数据...")
+    if verbose:
+        print(f"开始从 {path} 加载图数据...", flush=True)
     start_time = time.perf_counter()
 
     if not path.exists():
@@ -568,16 +573,17 @@ def load_graph_from_json(json_path: str) -> nx.MultiDiGraph:
         graph.graph["unresolved_calls"] = unresolved_calls
 
     elapsed = time.perf_counter() - start_time
-    print("--- 图加载完成！---")
-    print(f"图中有 {graph.number_of_nodes()} 个节点。")
-    print(f"图中有 {graph.number_of_edges()} 条边。")
-    if missing_ids:
-        print(f"警告: 跳过了 {missing_ids} 个缺少 id 的节点。")
-    if skipped_edges:
-        print(f"警告: 跳过了 {skipped_edges} 条缺少端点的边。")
-    if unresolved_calls is not None:
-        print(f"记录了 {len(unresolved_calls)} 个未解析的调用。")
-    print(f"加载过程耗时: {elapsed:.2f} 秒。")
+    if verbose:
+        print("--- 图加载完成！---", flush=True)
+        print(f"图中有 {graph.number_of_nodes()} 个节点。", flush=True)
+        print(f"图中有 {graph.number_of_edges()} 条边。", flush=True)
+        if missing_ids:
+            print(f"警告: 跳过了 {missing_ids} 个缺少 id 的节点。", flush=True)
+        if skipped_edges:
+            print(f"警告: 跳过了 {skipped_edges} 条缺少端点的边。", flush=True)
+        if unresolved_calls is not None:
+            print(f"记录了 {len(unresolved_calls)} 个未解析的调用。", flush=True)
+        print(f"加载过程耗时: {elapsed:.2f} 秒。", flush=True)
 
     return graph
 

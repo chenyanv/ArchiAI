@@ -1,21 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Mapping, MutableMapping, Optional, Sequence, Set, Tuple
 
 import networkx as nx
 
-from load_graph import load_graph_from_json
+from tools.graph_cache import _load_cached_graph
 
 DEFAULT_GRAPH_PATH = Path("results/graphs/call_graph.json")
-
-
-@lru_cache(maxsize=1)
-def _load_cached_graph(path: str) -> nx.MultiDiGraph:
-    """Load and cache the call graph to avoid repeated disk access."""
-    return load_graph_from_json(path)
 
 
 def _resolve_path(graph_path: Path | str | None) -> Path:
