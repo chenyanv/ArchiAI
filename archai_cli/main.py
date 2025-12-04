@@ -349,29 +349,56 @@ def _browse_component(
     log_tools: bool
 ) -> None:
     breadcrumbs: List[NavigationBreadcrumb] = []
+    node_cache: Dict[str, Any] = {}  # Cache nodes by breadcrumb path
     _render_component_overview(card)
     while True:
-        request = ComponentDrilldownRequest(
-            component_card=card,
-            breadcrumbs=breadcrumbs,
-            subagent_payload=coerce_subagent_payload(card),
-            database_url=database_url,
-        )
-        response = run_component_agent(
-            request,
-            debug=debug_agent,
-            logger=_agent_logger if debug_agent else None,
-            log_tool_usage=_tool_usage_logger if log_tools else None,
-            log_llm_input=_llm_input_logger if log_llm else None,
-        )
-        nodes = response.next_layer.nodes
+        # Create cache key from current breadcrumb path
+        cache_key = "/".join(crumb.node_key for crumb in breadcrumbs) if breadcrumbs else "__root__"
+
+        # Check cache first
+        if cache_key in node_cache:
+            cached_response = node_cache[cache_key]
+            nodes = cached_response["nodes"]
+            focus_label = cached_response["focus_label"]
+            focus_kind = cached_response["focus_kind"]
+            rationale = cached_response["rationale"]
+            agent_goal = cached_response["agent_goal"]
+        else:
+            # Cache miss - call agent
+            request = ComponentDrilldownRequest(
+                component_card=card,
+                breadcrumbs=breadcrumbs,
+                subagent_payload=coerce_subagent_payload(card),
+                database_url=database_url,
+            )
+            response = run_component_agent(
+                request,
+                debug=debug_agent,
+                logger=_agent_logger if debug_agent else None,
+                log_tool_usage=_tool_usage_logger if log_tools else None,
+                log_llm_input=_llm_input_logger if log_llm else None,
+            )
+            nodes = response.next_layer.nodes
+            focus_label = response.next_layer.focus_label
+            focus_kind = response.next_layer.focus_kind
+            rationale = response.next_layer.rationale
+            agent_goal = response.agent_goal
+
+            # Cache the response
+            node_cache[cache_key] = {
+                "nodes": nodes,
+                "focus_label": focus_label,
+                "focus_kind": focus_kind,
+                "rationale": rationale,
+                "agent_goal": agent_goal,
+            }
         _print_next_layer(
             nodes,
-            response.next_layer.focus_label,
-            response.next_layer.focus_kind,
-            response.next_layer.rationale,
-            response.agent_goal,
-            response.breadcrumbs or breadcrumbs,
+            focus_label,
+            focus_kind,
+            rationale,
+            agent_goal,
+            breadcrumbs,
         )
         while True:
             selection = _prompt_node_choice(nodes)
