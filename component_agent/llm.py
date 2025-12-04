@@ -87,7 +87,8 @@ def build_component_chat_model(*, temperature: float = 0.0) -> BaseChatModel:
         model=model_name,
         temperature=temperature,
         google_api_key=api_key,
-        model_kwargs={"response_format": {"type": "json_object"}},
+        # NOTE: Removed response_format because JSON mode disables tool calling
+        # The model will use tool calling first, then return JSON in final response
     )
 
 

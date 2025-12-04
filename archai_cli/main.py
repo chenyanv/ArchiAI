@@ -17,7 +17,7 @@ from component_agent import (
 )
 from component_agent.toolkit import DEFAULT_SUBAGENT_TOOLS
 from orchestration_agent.graph import run_orchestration_agent
-from tools import get_node_details_tool, get_source_code_tool
+from tools import get_node_details, get_source_code
 
 
 TOOL_REGISTRY = {tool.name: tool for tool in DEFAULT_SUBAGENT_TOOLS}
@@ -31,6 +31,7 @@ class CLIArgs:
     debug_agent: bool
     log_llm: bool
     log_tools: bool
+    no_cache: bool
 
 
 def _parse_args() -> CLIArgs:
@@ -70,6 +71,11 @@ def _parse_args() -> CLIArgs:
         action="store_true",
         help="Print tool invocations and results.",
     )
+    parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="Disable response caching (always call the agent).",
+    )
     args = parser.parse_args()
     plan_path = Path(args.plan_path).expanduser().resolve()
     return CLIArgs(
@@ -79,6 +85,7 @@ def _parse_args() -> CLIArgs:
         debug_agent=args.debug_agent,
         log_llm=args.log_llm,
         log_tools=args.log_tools,
+        no_cache=args.no_cache,
     )
 
 
@@ -114,11 +121,52 @@ def _serialise_for_log(value: Any, limit: int = 600) -> str:
 
 
 def _tool_usage_logger(tool_name: str, args: Dict[str, Any], result: Any) -> None:
-    print("\n=== AGENT TOOL INVOCATION ===")
-    print(f"Tool   : {tool_name}")
-    print(f"Args   : {_serialise_for_log(args)}")
-    print(f"Result : {_serialise_for_log(result)}")
-    print("=== END TOOL INVOCATION ===")
+    # Human-readable tool description
+    tool_descriptions = {
+        "find_paths": "Finding execution paths between nodes",
+        "get_source_code": "Reading source code",
+        "get_call_graph_context": "Analyzing call graph context",
+        "get_neighbors": "Finding neighboring nodes",
+        "get_node_details": "Getting node details",
+        "list_entry_point": "Listing entry points",
+        "list_core_models": "Listing core data models",
+    }
+
+    description = tool_descriptions.get(tool_name, f"Using tool {tool_name}")
+    print(f"\n🔧 Agent: {description}...", flush=True)
+
+    # Show key arguments in a readable way
+    if tool_name == "find_paths":
+        start = args.get("start_nodes", [])
+        end = args.get("end_nodes", [])
+        if start and end:
+            print(f"   Finding paths from {len(start)} start node(s) to {len(end)} end node(s)", flush=True)
+    elif tool_name == "get_source_code":
+        node_id = args.get("node_id", "")
+        if node_id:
+            # Extract just the symbol name for readability
+            symbol = node_id.split("::")[-1] if "::" in node_id else node_id
+            print(f"   Reading: {symbol}", flush=True)
+    elif tool_name in ["get_neighbors", "get_call_graph_context"]:
+        node_id = args.get("node_id", "")
+        if node_id:
+            symbol = node_id.split("::")[-1] if "::" in node_id else node_id
+            print(f"   Analyzing: {symbol}", flush=True)
+
+    # Show result summary (not full dump)
+    if isinstance(result, dict):
+        if "paths" in result:
+            paths = result.get("paths", [])
+            print(f"   ✓ Found {len(paths)} path(s)", flush=True)
+        elif "code" in result:
+            code_lines = len(result.get("code", "").split("\n"))
+            print(f"   ✓ Retrieved {code_lines} lines of code", flush=True)
+        elif "callers" in result or "callees" in result:
+            callers = len(result.get("callers", []))
+            callees = len(result.get("callees", []))
+            print(f"   ✓ Found {callers} caller(s), {callees} callee(s)", flush=True)
+    elif isinstance(result, list):
+        print(f"   ✓ Retrieved {len(result)} item(s)", flush=True)
 
 
 def _llm_input_logger(messages: List[Dict[str, Any]]) -> None:
@@ -200,13 +248,39 @@ def _render_component_overview(card: Dict[str, Any]) -> None:
             print(f"  - {objective}")
 
 
-def _print_next_layer(nodes: Sequence[NavigationNode], focus_label: str, focus_kind: str, rationale: str, agent_goal: str, breadcrumbs: Sequence[NavigationBreadcrumb]) -> None:
+def _print_next_layer(
+    nodes: Sequence[NavigationNode],
+    focus_label: str,
+    focus_kind: str,
+    rationale: str,
+    agent_goal: str,
+    breadcrumbs: Sequence[NavigationBreadcrumb],
+    is_sequential: bool = False,
+    workflow_narrative: Optional[str] = None
+) -> None:
     trail = " / ".join(crumb.title for crumb in breadcrumbs) or focus_label
     print("\n=== DRILLDOWN CONTEXT ===")
     print(f"Agent Goal : {agent_goal}")
     print(f"Focus      : {focus_label} ({focus_kind})")
     print(f"Rationale  : {rationale}")
     print(f"Breadcrumbs: {trail}")
+
+    # Workflow visualization
+    if is_sequential and workflow_narrative:
+        print(f"\n📊 Workflow Overview:")
+        print(f"   {workflow_narrative}")
+        print("\n   Flow Diagram:")
+        sorted_nodes = sorted(
+            [n for n in nodes if n.sequence_order is not None],
+            key=lambda n: n.sequence_order
+        )
+        for i, node in enumerate(sorted_nodes):
+            arrow = "      ↓" if i < len(sorted_nodes) - 1 else ""
+            print(f"   [{node.sequence_order + 1}] {node.title}")
+            if arrow:
+                print(arrow)
+        print()
+
     print("\nAvailable nodes:")
     for index, node in enumerate(nodes, start=1):
         print(
@@ -253,7 +327,7 @@ def _handle_inspect_source(target_id: Optional[str], database_url: Optional[str]
         return
     try:
         payload = _ensure_database_arg({"node_id": target_id}, database_url)
-        result = get_source_code_tool.invoke(payload)
+        result = get_source_code.invoke(payload)
     except Exception as exc:  # pragma: no cover - interactive feedback
         print(f"[ERROR] Unable to fetch source: {exc}")
         return
@@ -273,7 +347,7 @@ def _handle_inspect_node(target_id: Optional[str], database_url: Optional[str]) 
         return
     try:
         payload = _ensure_database_arg({"node_id": target_id}, database_url)
-        result = get_node_details_tool.invoke(payload)
+        result = get_node_details.invoke(payload)
     except Exception as exc:
         print(f"[ERROR] Unable to fetch node details: {exc}")
         return
@@ -346,7 +420,8 @@ def _browse_component(
     *,
     debug_agent: bool,
     log_llm: bool,
-    log_tools: bool
+    log_tools: bool,
+    no_cache: bool = False,
 ) -> None:
     breadcrumbs: List[NavigationBreadcrumb] = []
     node_cache: Dict[str, Any] = {}  # Cache nodes by breadcrumb path
@@ -355,14 +430,16 @@ def _browse_component(
         # Create cache key from current breadcrumb path
         cache_key = "/".join(crumb.node_key for crumb in breadcrumbs) if breadcrumbs else "__root__"
 
-        # Check cache first
-        if cache_key in node_cache:
+        # Check cache first (unless no_cache is True)
+        if not no_cache and cache_key in node_cache:
             cached_response = node_cache[cache_key]
             nodes = cached_response["nodes"]
             focus_label = cached_response["focus_label"]
             focus_kind = cached_response["focus_kind"]
             rationale = cached_response["rationale"]
             agent_goal = cached_response["agent_goal"]
+            is_sequential = cached_response.get("is_sequential", False)
+            workflow_narrative = cached_response.get("workflow_narrative")
         else:
             # Cache miss - call agent
             request = ComponentDrilldownRequest(
@@ -375,7 +452,7 @@ def _browse_component(
                 request,
                 debug=debug_agent,
                 logger=_agent_logger if debug_agent else None,
-                log_tool_usage=_tool_usage_logger if log_tools else None,
+                log_tool_usage=_tool_usage_logger,  # Always show tool usage
                 log_llm_input=_llm_input_logger if log_llm else None,
             )
             nodes = response.next_layer.nodes
@@ -383,6 +460,8 @@ def _browse_component(
             focus_kind = response.next_layer.focus_kind
             rationale = response.next_layer.rationale
             agent_goal = response.agent_goal
+            is_sequential = response.next_layer.is_sequential
+            workflow_narrative = response.next_layer.workflow_narrative
 
             # Cache the response
             node_cache[cache_key] = {
@@ -391,6 +470,8 @@ def _browse_component(
                 "focus_kind": focus_kind,
                 "rationale": rationale,
                 "agent_goal": agent_goal,
+                "is_sequential": is_sequential,
+                "workflow_narrative": workflow_narrative,
             }
         _print_next_layer(
             nodes,
@@ -399,6 +480,8 @@ def _browse_component(
             rationale,
             agent_goal,
             breadcrumbs,
+            is_sequential,
+            workflow_narrative,
         )
         while True:
             selection = _prompt_node_choice(nodes)
@@ -446,6 +529,7 @@ def main() -> None:
         debug_agent=args.debug_agent,
         log_llm=args.log_llm,
         log_tools=args.log_tools,
+        no_cache=args.no_cache,
     )
 
 

@@ -103,6 +103,10 @@ class NavigationNode(BaseModel):
         default=None,
         description="Optional relative importance score between 0 and 1.",
     )
+    sequence_order: Optional[int] = Field(
+        default=None,
+        description="Position in workflow sequence (0-indexed). None if not part of a sequential flow.",
+    )
 
 
 class NextLayerView(BaseModel):
@@ -111,6 +115,14 @@ class NextLayerView(BaseModel):
     rationale: str = Field(..., description="Why the agent picked the current breakdown strategy.")
     nodes: List[NavigationNode] = Field(
         ..., description="Proposed next-layer nodes presented to the user.")
+    workflow_narrative: Optional[str] = Field(
+        default=None,
+        description="1-3 sentence description of how these nodes form a workflow or process.",
+    )
+    is_sequential: bool = Field(
+        default=False,
+        description="True if nodes should be displayed as a sequential flow diagram.",
+    )
 
     @model_validator(mode="after")
     def _validate_nodes(self) -> "NextLayerView":

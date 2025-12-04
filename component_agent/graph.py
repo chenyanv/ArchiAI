@@ -2,20 +2,19 @@
 
 from __future__ import annotations
 
-import ast
 import json
-from typing import Any, Callable, Dict, Iterable, List, Mapping, MutableMapping, Optional, Sequence
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence
 
+from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import BaseTool
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
-from pydantic import ValidationError
 from typing_extensions import Annotated, TypedDict
 
 from .llm import build_component_chat_model
 from .prompt import build_component_system_prompt, format_component_request
-from .schemas import ComponentDrilldownRequest, ComponentDrilldownResponse, NavigationBreadcrumb
+from .schemas import ComponentDrilldownRequest, ComponentDrilldownResponse
 from .toolkit import DEFAULT_SUBAGENT_TOOLS, summarise_tools
 
 
@@ -56,7 +55,7 @@ def _should_continue(state: ComponentAgentState) -> str:
     last: BaseMessage = state["messages"][-1]
     if isinstance(last, AIMessage) and getattr(last, "tool_calls", None):
         return "tool"
-    return "final"
+    return "end"
 
 
 class InstrumentedToolNode:
@@ -76,6 +75,7 @@ class InstrumentedToolNode:
         outputs: List[ToolMessage] = []
         last = state["messages"][-1]
         tool_calls = getattr(last, "tool_calls", None) or []
+
         for tool_call in tool_calls:
             name = tool_call.get("name")
             if not name:
@@ -115,12 +115,13 @@ def build_component_agent(
 ):
     model = build_component_chat_model(temperature=temperature)
     toolset = list(tools or DEFAULT_SUBAGENT_TOOLS)
+    model_with_tools = model.bind_tools(toolset)
 
     workflow = StateGraph(ComponentAgentState)
     workflow.add_node(
         "agent",
         _call_model(
-            model,
+            model_with_tools,  # Use model with bound tools
             logger=logger,
             debug=debug,
             context_logger=llm_context_logger,
@@ -135,7 +136,7 @@ def build_component_agent(
         _should_continue,
         {
             "tool": "tool_node",
-            "final": END,
+            "end": END,
         },
     )
     workflow.add_edge("tool_node", "agent")
@@ -157,53 +158,6 @@ def _coerce_text(content: Any) -> str:
                     fragments.append(str(text))
         return "\n".join(fragments)
     return str(content)
-
-
-def _iter_json_candidates(text: str) -> Iterable[str]:
-    stripped = text.strip()
-    if stripped:
-        yield stripped
-    if stripped.startswith("```"):
-        lines = stripped.splitlines()
-        if len(lines) >= 2:
-            inner = "\n".join(lines[1:-1]).strip()
-            if inner:
-                yield inner
-    brace_start = stripped.find("{")
-    brace_end = stripped.rfind("}")
-    if 0 <= brace_start < brace_end:
-        maybe = stripped[brace_start : brace_end + 1].strip()
-        if maybe:
-            yield maybe
-
-
-def _parse_agent_payload(raw_text: str) -> Dict[str, Any]:
-    def _load_candidate(candidate: str) -> Optional[Dict[str, Any]]:
-        try:
-            parsed = json.loads(candidate)
-        except json.JSONDecodeError:
-            parsed = None
-        if isinstance(parsed, MutableMapping):
-            return dict(parsed)
-        try:
-            literal = ast.literal_eval(candidate)
-        except (ValueError, SyntaxError):
-            return None
-        if isinstance(literal, MutableMapping):
-            return dict(literal)
-        return None
-
-    for candidate in _iter_json_candidates(raw_text):
-        parsed = _load_candidate(candidate)
-        if parsed is not None:
-            return parsed
-    raise ValueError("Agent response did not contain valid JSON.")
-
-
-def _breadcrumbs_to_payload(
-    breadcrumbs: Sequence[NavigationBreadcrumb],
-) -> List[Dict[str, Any]]:
-    return [crumb.dict() for crumb in breadcrumbs]
 
 
 def _safe_json(value: Any) -> str:
@@ -270,57 +224,33 @@ def run_component_agent(
         content=format_component_request(request, tool_catalog=tool_catalog)
     )
 
+    # Run the ReAct loop to gather tool information
     messages: List[BaseMessage] = [system_message, human_message]
-    for attempt in range(max_retries):
-        final_state = graph.invoke({"messages": messages})
-        ai_messages = [
-            message
-            for message in final_state["messages"]
-            if isinstance(message, AIMessage)
-        ]
-        if not ai_messages:
-            raise RuntimeError("Component agent produced no AI response.")
-        final_message = ai_messages[-1]
-        raw_text = _coerce_text(final_message.content)
-        try:
-            payload = _parse_agent_payload(raw_text)
-        except ValueError:
-            if attempt < max_retries - 1:
-                messages.append(final_message)
-                messages.append(
-                    HumanMessage(
-                        "Your last response was not valid JSON. Please try again, "
-                        "ensuring your entire response is a single JSON object."
-                    )
-                )
-                continue
-            raise
+    final_state = graph.invoke({"messages": messages})
 
-        payload.setdefault(
-            "component_id", str(request.component_card.get("component_id", ""))
-        )
-        if "breadcrumbs" not in payload and request.breadcrumbs:
-            payload["breadcrumbs"] = _breadcrumbs_to_payload(request.breadcrumbs)
-        payload.setdefault("notes", [])
-        payload["raw_response"] = raw_text
-
-        try:
-            response = ComponentDrilldownResponse.model_validate(payload)
-            return response
-        except ValidationError as e:
-            if attempt >= max_retries - 1:
-                raise
-            messages.append(final_message)
-            messages.append(
-                HumanMessage(
-                    f"Your last response failed validation. Error: {e}. "
-                    "Please correct your response to match the schema."
-                )
-            )
-
-    raise RuntimeError(
-        f"Component agent failed to produce a valid response after {max_retries} attempts."
+    # Use structured output to generate the final response
+    # This leverages Gemini's native JSON schema enforcement
+    model = build_component_chat_model(temperature=temperature)
+    structured_model = model.with_structured_output(
+        ComponentDrilldownResponse,
+        method="json_schema",
     )
+
+    if debug and logger:
+        logger("[structured_output] Generating ComponentDrilldownResponse from conversation")
+
+    response: ComponentDrilldownResponse = structured_model.invoke(final_state["messages"])
+
+    # Fill in missing fields if needed
+    if not response.component_id:
+        response.component_id = str(request.component_card.get("component_id", ""))
+    if not response.breadcrumbs and request.breadcrumbs:
+        response.breadcrumbs = list(request.breadcrumbs)
+
+    if debug and logger:
+        logger(f"[structured_output:success] Generated response with {len(response.next_layer.nodes)} nodes")
+
+    return response
 
 
 __all__ = ["build_component_agent", "run_component_agent"]
