@@ -1,3 +1,5 @@
+"""Tool to enumerate Peewee ORM models stored in the structural scaffolding database."""
+
 from __future__ import annotations
 
 import ast
@@ -5,12 +7,11 @@ import logging
 import textwrap
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
-from langchain_core.tools import StructuredTool
+from langchain_core.tools import BaseTool, tool
 from pydantic import BaseModel, Field
 from sqlalchemy import select
-from sqlalchemy.orm import Session
 
 from structural_scaffolding.database import ProfileRecord, create_session
 
@@ -20,22 +21,10 @@ LOGGER = logging.getLogger(__name__)
 
 
 class ListCoreModelsInput(BaseModel):
-    limit: int = Field(
-        default=DEFAULT_LIMIT,
-        ge=1,
-        le=500,
-        description="Maximum number of models to inspect (post filtering).",
-    )
+    limit: int = Field(default=DEFAULT_LIMIT, ge=1, le=500, description="Maximum number of models to inspect.")
     directories: Optional[List[str]] = Field(
         default=None,
-        description=(
-            "Optional list of path segments that must be contained in the profile's file_path. "
-            "Defaults to ['api', 'db'] if omitted."
-        ),
-    )
-    database_url: Optional[str] = Field(
-        default=None,
-        description="Optional override for the structural scaffolding database URL.",
+        description="Optional list of path segments that must be contained in the profile's file_path. Defaults to ['api', 'db'].",
     )
 
 
@@ -49,91 +38,46 @@ class _FieldSchema:
     line: Optional[int]
 
 
-def build_list_core_models_tool() -> StructuredTool:
-    """
-    Create a LangGraph-compatible tool that enumerates Peewee ORM models
-    stored in the structural scaffolding profile database and returns a JSON schema.
-    """
-
-    def _run(
-        limit: int = DEFAULT_LIMIT,
-        directories: Optional[Sequence[str]] = None,
-        database_url: Optional[str] = None,
-    ) -> List[Dict[str, Any]]:
-        session = create_session(database_url)
-        try:
-            models = _load_model_profiles(
-                session=session,
-                limit=limit,
-                directories=directories,
-            )
-            return [_profile_to_schema(record) for record in models]
-        finally:
-            session.close()
-
-    return StructuredTool.from_function(
-        func=_run,
-        name="list_core_models",
-        description=(
-            "Inspect Peewee model classes captured by structural scaffolding and "
-            "summarise their schema (fields, table metadata) as JSON."
-        ),
-        args_schema=ListCoreModelsInput,
-        return_direct=True,
-    )
-
-
-list_core_models = build_list_core_models_tool()
-
-
 def _load_model_profiles(
-    *,
-    session: Session,
-    limit: int,
-    directories: Optional[Sequence[str]],
+    workspace_id: str, database_url: str | None, limit: int, directories: Optional[Sequence[str]]
 ) -> List[ProfileRecord]:
-    stmt = select(ProfileRecord).where(ProfileRecord.kind == "class")
-    results = session.execute(stmt).scalars()
-    include_dirs = _normalise_directories(directories)
+    session = create_session(database_url)
+    try:
+        stmt = select(ProfileRecord).where(ProfileRecord.workspace_id == workspace_id, ProfileRecord.kind == "class")
+        results = session.execute(stmt).scalars()
+        include_dirs = _normalise_directories(directories)
+        matches = []
+        for record in results:
+            if include_dirs and not _path_matches(record.file_path, include_dirs):
+                continue
+            matches.append(record)
+            if len(matches) >= limit:
+                break
+        return matches
+    finally:
+        session.close()
 
-    matches: List[ProfileRecord] = []
-    for record in results:
-        if include_dirs and not _path_matches(record.file_path, include_dirs):
-            continue
-        matches.append(record)
-        if len(matches) >= limit:
-            break
-    return matches
 
-
-def _normalise_directories(
-    directories: Optional[Sequence[str]],
-) -> Tuple[str, ...]:
+def _normalise_directories(directories: Optional[Sequence[str]]) -> Tuple[str, ...]:
     if not directories:
         return DEFAULT_DIRECTORIES
-    cleaned = tuple(
-        segment.strip().strip("/").replace("\\", "/")
-        for segment in directories
-        if segment and segment.strip()
-    )
+    cleaned = tuple(seg.strip().strip("/").replace("\\", "/") for seg in directories if seg and seg.strip())
     return cleaned or DEFAULT_DIRECTORIES
 
 
 def _path_matches(file_path: str, directories: Sequence[str]) -> bool:
     if not directories:
         return True
-
     normalised = file_path.replace("\\", "/").lstrip("./")
     path_tokens = tuple(part for part in normalised.split("/") if part)
     if not path_tokens:
         return False
-
     for directory in directories:
         dir_tokens = tuple(part for part in directory.split("/") if part)
         if not dir_tokens:
             continue
         window = len(dir_tokens)
-        for start in range(0, len(path_tokens) - window + 1):
+        for start in range(len(path_tokens) - window + 1):
             if path_tokens[start : start + window] == dir_tokens:
                 return True
     return False
@@ -144,16 +88,10 @@ def _profile_to_schema(record: ProfileRecord) -> Dict[str, Any]:
     try:
         module = ast.parse(source)
     except SyntaxError as exc:
-        LOGGER.debug(
-            "Failed to parse class profile %s (%s:%s): %s",
-            record.id,
-            record.file_path,
-            record.start_line,
-            exc,
-        )
+        LOGGER.debug("Failed to parse class profile %s (%s:%s): %s", record.id, record.file_path, record.start_line, exc)
         return _fallback_schema(record)
 
-    class_node = _first_class_def(module)
+    class_node = next((n for n in getattr(module, "body", []) if isinstance(n, ast.ClassDef)), None)
     if class_node is None:
         return _fallback_schema(record)
 
@@ -164,16 +102,10 @@ def _profile_to_schema(record: ProfileRecord) -> Dict[str, Any]:
         if extracted:
             fields.extend(extracted)
             continue
-
         if isinstance(statement, ast.ClassDef) and statement.name == "Meta":
             meta_payload = _extract_meta_schema(statement)
 
-    bases = [
-        value
-        for value in (_safe_unparse(base) for base in class_node.bases)
-        if value
-    ]
-
+    bases = [v for v in (_safe_unparse(base) for base in class_node.bases) if v]
     schema = {
         "node_id": record.id,
         "model_name": class_node.name,
@@ -182,79 +114,39 @@ def _profile_to_schema(record: ProfileRecord) -> Dict[str, Any]:
         "start_line": record.start_line,
         "end_line": record.end_line,
         "bases": bases or None,
-        "fields": [_field_to_payload(field) for field in fields],
+        "fields": [_field_to_payload(f) for f in fields],
         "meta": meta_payload or None,
     }
-    schema = {key: value for key, value in schema.items() if value is not None}
-    return schema
+    return {k: v for k, v in schema.items() if v is not None}
 
 
-def _first_class_def(module: ast.AST) -> Optional[ast.ClassDef]:
-    for node in getattr(module, "body", []):
-        if isinstance(node, ast.ClassDef):
-            return node
-    return None
-
-
-def _extract_field_schema(
-    statement: ast.stmt,
-    class_start: int,
-) -> List[_FieldSchema]:
-    collector: List[_FieldSchema] = []
+def _extract_field_schema(statement: ast.stmt, class_start: int) -> List[_FieldSchema]:
+    collector = []
     if isinstance(statement, ast.Assign):
         for target in statement.targets:
             field = _build_field_schema(target, statement.value, statement.lineno, class_start)
             if field:
                 collector.append(field)
     elif isinstance(statement, ast.AnnAssign):
-        field = _build_field_schema(
-            statement.target,
-            statement.value,
-            statement.lineno,
-            class_start,
-        )
+        field = _build_field_schema(statement.target, statement.value, statement.lineno, class_start)
         if field:
             collector.append(field)
     return collector
 
 
-def _build_field_schema(
-    target: ast.expr,
-    value: Optional[ast.expr],
-    lineno: Optional[int],
-    class_start: int,
-) -> Optional[_FieldSchema]:
-    if not isinstance(target, ast.Name) or value is None:
+def _build_field_schema(target: ast.expr, value: Optional[ast.expr], lineno: Optional[int], class_start: int) -> Optional[_FieldSchema]:
+    if not isinstance(target, ast.Name) or value is None or not isinstance(value, ast.Call):
         return None
-    if not isinstance(value, ast.Call):
-        return None
-
     qualified_type = _safe_unparse(value.func)
     if not qualified_type:
         return None
-
     field_type = qualified_type.split(".")[-1]
     if not field_type.endswith("Field"):
         return None
-
     args = tuple(_safe_literal_eval(arg) for arg in value.args)
-    kwargs = {
-        kw.arg: _safe_literal_eval(kw.value)
-        for kw in value.keywords
-        if kw.arg
-    }
-    absolute_line = None
-    if lineno is not None:
-        absolute_line = class_start + lineno - 1
-
-    return _FieldSchema(
-        name=target.id,
-        field_type=field_type,
-        qualified_type=qualified_type,
-        args=args,
-        kwargs=kwargs,
-        line=absolute_line,
-    )
+    kwargs = {kw.arg: _safe_literal_eval(kw.value) for kw in value.keywords if kw.arg}
+    absolute_line = class_start + lineno - 1 if lineno else None
+    return _FieldSchema(name=target.id, field_type=field_type, qualified_type=qualified_type, args=args, kwargs=kwargs, line=absolute_line)
 
 
 def _extract_meta_schema(meta_class: ast.ClassDef) -> Dict[str, Any]:
@@ -262,28 +154,15 @@ def _extract_meta_schema(meta_class: ast.ClassDef) -> Dict[str, Any]:
     for statement in meta_class.body:
         if isinstance(statement, ast.Assign):
             for target in statement.targets:
-                _assign_meta_value(payload, target, statement.value)
-        elif isinstance(statement, ast.AnnAssign):
-            _assign_meta_value(payload, statement.target, statement.value)
+                if isinstance(target, ast.Name) and statement.value:
+                    payload[target.id] = _safe_literal_eval(statement.value)
+        elif isinstance(statement, ast.AnnAssign) and isinstance(statement.target, ast.Name) and statement.value:
+            payload[statement.target.id] = _safe_literal_eval(statement.value)
     return payload
 
 
-def _assign_meta_value(
-    payload: Dict[str, Any],
-    target: ast.expr,
-    value: Optional[ast.expr],
-) -> None:
-    if not isinstance(target, ast.Name) or value is None:
-        return
-    payload[target.id] = _safe_literal_eval(value)
-
-
 def _field_to_payload(field: _FieldSchema) -> Dict[str, Any]:
-    payload: Dict[str, Any] = {
-        "name": field.name,
-        "field_type": field.field_type,
-        "qualified_type": field.qualified_type,
-    }
+    payload: Dict[str, Any] = {"name": field.name, "field_type": field.field_type, "qualified_type": field.qualified_type}
     if field.args:
         payload["args"] = list(field.args)
     if field.kwargs:
@@ -310,7 +189,7 @@ def _safe_literal_eval(node: ast.AST) -> Any:
         return ast.literal_eval(node)
     except Exception:
         rendered = _safe_unparse(node)
-        return rendered if rendered is not None else repr(node)
+        return rendered if rendered else repr(node)
 
 
 def _safe_unparse(node: Optional[ast.AST]) -> Optional[str]:
@@ -323,18 +202,30 @@ def _safe_unparse(node: Optional[ast.AST]) -> Optional[str]:
 
 
 def _fallback_schema(record: ProfileRecord) -> Dict[str, Any]:
-    payload: Dict[str, Any] = {
-        "node_id": record.id,
-        "model_name": record.class_name,
-        "qualified_name": _lookup_qualified_name(record),
-        "file_path": record.file_path,
-        "start_line": record.start_line,
-        "end_line": record.end_line,
+    return {
+        k: v
+        for k, v in {
+            "node_id": record.id,
+            "model_name": record.class_name,
+            "qualified_name": _lookup_qualified_name(record),
+            "file_path": record.file_path,
+            "start_line": record.start_line,
+            "end_line": record.end_line,
+        }.items()
+        if v is not None
     }
-    return {key: value for key, value in payload.items() if value is not None}
 
 
-__all__ = [
-    "build_list_core_models_tool",
-    "list_core_models",
-]
+def build_list_core_models_tool(workspace_id: str, database_url: str | None = None) -> BaseTool:
+    """Create a list_core_models tool bound to a specific workspace."""
+
+    @tool(args_schema=ListCoreModelsInput)
+    def list_core_models(limit: int = DEFAULT_LIMIT, directories: Optional[Sequence[str]] = None) -> List[Dict[str, Any]]:
+        """Inspect Peewee model classes captured by structural scaffolding and summarise their schema as JSON."""
+        models = _load_model_profiles(workspace_id, database_url, limit, directories)
+        return [_profile_to_schema(record) for record in models]
+
+    return list_core_models
+
+
+__all__ = ["ListCoreModelsInput", "build_list_core_models_tool"]

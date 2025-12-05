@@ -1,25 +1,18 @@
+"""Common graph query utilities used by tools."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Mapping, MutableMapping, Optional, Sequence, Set, Tuple
 
 import networkx as nx
 
-from tools.graph_cache import DEFAULT_GRAPH_PATH, _load_cached_graph, get_graph_path
+from tools.graph_cache import load_graph_cached
 
 
-def _resolve_path(graph_path: Path | str | None) -> Path:
-    resolved = Path(graph_path or get_graph_path()).expanduser().resolve()
-    if not resolved.exists():
-        raise FileNotFoundError(f"Call graph not found: {resolved}")
-    return resolved
-
-
-def load_graph_cached(graph_path: Path | str | None = None) -> nx.MultiDiGraph:
-    """Return the cached NetworkX call graph for the provided path."""
-    resolved = _resolve_path(graph_path)
-    return _load_cached_graph(str(resolved))
+def get_graph(workspace_id: str, database_url: str | None = None) -> nx.MultiDiGraph:
+    """Get the call graph for a workspace."""
+    return load_graph_cached(workspace_id, database_url)
 
 
 def normalise_category(attrs: Mapping[str, Any]) -> str:
@@ -74,9 +67,7 @@ def iter_edge_bundles(
     direction: str,
     edge_types: Optional[Sequence[str]] = None,
 ) -> Iterator[Tuple[str, List[Mapping[str, Any]]]]:
-    """
-    Yield (neighbor_id, edge_attrs_list) tuples for inbound or outbound edges.
-    """
+    """Yield (neighbor_id, edge_attrs_list) tuples for inbound or outbound edges."""
     if node_id not in graph:
         return
 

@@ -1,4 +1,4 @@
-"""Shared graph cache used by all tools to avoid redundant loading."""
+"""Graph storage and caching for call graphs."""
 
 from __future__ import annotations
 
@@ -6,24 +6,74 @@ from functools import lru_cache
 
 import networkx as nx
 
-from load_graph import load_graph_from_json
-
-# Global flag to track if we've already loaded the graph once
-_GRAPH_LOADED = False
+from structural_scaffolding.database import CallGraphRecord, create_session
 
 
-@lru_cache(maxsize=1)
-def _load_cached_graph(path: str) -> nx.MultiDiGraph:
-    """
-    Load and cache the call graph to avoid repeated disk access.
+def save_graph(
+    workspace_id: str,
+    graph: nx.MultiDiGraph,
+    database_url: str | None = None,
+) -> None:
+    """Save a call graph to the database."""
+    session = create_session(database_url)
+    try:
+        data = nx.node_link_data(graph)
+        record = CallGraphRecord(
+            workspace_id=workspace_id,
+            graph_data=data,
+            node_count=graph.number_of_nodes(),
+            edge_count=graph.number_of_edges(),
+        )
+        session.merge(record)
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
 
-    This is a shared global cache used by all tools. The graph is loaded
-    once and then reused across all subsequent tool invocations.
-    """
-    global _GRAPH_LOADED
 
-    # Only show verbose loading messages on the very first load
-    verbose = not _GRAPH_LOADED
-    _GRAPH_LOADED = True
+def load_graph(
+    workspace_id: str,
+    database_url: str | None = None,
+) -> nx.MultiDiGraph:
+    """Load a call graph from the database."""
+    session = create_session(database_url)
+    try:
+        record = session.get(CallGraphRecord, workspace_id)
+        if record is None:
+            raise ValueError(f"No call graph found for workspace '{workspace_id}'")
+        return nx.node_link_graph(record.graph_data)
+    finally:
+        session.close()
 
-    return load_graph_from_json(path, verbose=verbose)
+
+def graph_exists(workspace_id: str, database_url: str | None = None) -> bool:
+    """Check if a call graph exists for a workspace."""
+    session = create_session(database_url)
+    try:
+        record = session.get(CallGraphRecord, workspace_id)
+        return record is not None
+    finally:
+        session.close()
+
+
+# In-memory cache for loaded graphs (keyed by workspace_id + database_url)
+@lru_cache(maxsize=8)
+def load_graph_cached(workspace_id: str, database_url: str | None = None) -> nx.MultiDiGraph:
+    """Load a call graph with caching to avoid repeated database access."""
+    return load_graph(workspace_id, database_url)
+
+
+def clear_graph_cache() -> None:
+    """Clear the in-memory graph cache."""
+    load_graph_cached.cache_clear()
+
+
+__all__ = [
+    "clear_graph_cache",
+    "graph_exists",
+    "load_graph",
+    "load_graph_cached",
+    "save_graph",
+]

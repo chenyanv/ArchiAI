@@ -1,51 +1,28 @@
+"""List probable API entry points by inspecting route decorators from ProfileRecord."""
+
 from __future__ import annotations
 
 import ast
-import json
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Tuple
 
-from langchain_core.tools import StructuredTool
+from langchain_core.tools import BaseTool, tool
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 
-from tools.graph_cache import get_graph_path
-REPO_ROOT = Path(__file__).resolve().parents[1]
-SEARCH_ROOTS: Tuple[Path, ...] = (REPO_ROOT, REPO_ROOT / "ragflow-main")
+from structural_scaffolding.database import ProfileRecord, create_session
 
-HTTP_METHOD_DECORATORS: Tuple[str, ...] = (
-    "get",
-    "post",
-    "put",
-    "delete",
-    "patch",
-    "options",
-    "head",
-    "trace",
-)
+HTTP_METHOD_DECORATORS: Tuple[str, ...] = ("get", "post", "put", "delete", "patch", "options", "head", "trace")
 ROUTE_DECORATORS: Tuple[str, ...] = ("route", "api_route", "websocket")
 
 
 class ListEntryPointInput(BaseModel):
-    limit: int = Field(
-        20,
-        ge=1,
-        le=200,
-        description="Maximum number of entry points to return.",
-    )
-    framework: Optional[str] = Field(
-        None,
-        description="Optional framework filter (e.g. fastapi, flask).",
-    )
-    path_contains: Optional[str] = Field(
-        None,
-        description="Restrict results to routes containing this substring.",
-    )
-    include_docstring: bool = Field(
-        False,
-        description="Whether to include a short docstring summary when available.",
-    )
+    limit: int = Field(20, ge=1, le=200, description="Maximum number of entry points to return.")
+    framework: Optional[str] = Field(None, description="Optional framework filter (e.g. fastapi, flask).")
+    path_contains: Optional[str] = Field(None, description="Restrict results to routes containing this substring.")
+    include_docstring: bool = Field(False, description="Whether to include a short docstring summary when available.")
 
 
 @dataclass(frozen=True)
@@ -73,137 +50,53 @@ class _EntryPointRecord:
     docstring: Optional[str]
 
 
-def build_list_entry_point_tool(
-    graph_path: Path | str | None = None,
-) -> StructuredTool:
-    """
-    Create a LangGraph-compatible tool that enumerates likely HTTP entry points
-    (FastAPI/Flask routes) discovered in the project.
-    """
-    resolved_path = Path(graph_path or get_graph_path()).expanduser().resolve()
-
-    def _run(
-        limit: int = 20,
-        framework: Optional[str] = None,
-        path_contains: Optional[str] = None,
-        include_docstring: bool = False,
-    ) -> List[Dict[str, Any]]:
-        entries = _discover_entry_points(str(resolved_path))
-        filtered = _filter_entry_points(
-            entries,
-            framework=framework,
-            path_contains=path_contains,
-        )
-        sliced = filtered[:limit]
-        return [
-            _entry_point_to_payload(entry, include_docstring=include_docstring)
-            for entry in sliced
-        ]
-
-    return StructuredTool.from_function(
-        func=_run,
-        name="list_entry_point",
-        description=(
-            "List probable API entry points (e.g., FastAPI routers or Flask views) "
-            "by inspecting route decorators across the codebase. "
-            "Useful for identifying HTTP endpoints and their route metadata."
-        ),
-        args_schema=ListEntryPointInput,
-        return_direct=True,
-    )
-
-
-list_entry_point_tool = build_list_entry_point_tool()
-
-
-@lru_cache(maxsize=1)
-def _discover_entry_points(graph_path: str) -> Tuple[_EntryPointRecord, ...]:
-    nodes = _load_call_graph_nodes(Path(graph_path))
-    file_nodes = (
-        node
-        for node in nodes
-        if node.get("kind") == "file" and str(node.get("file_path", "")).endswith(".py")
-    )
-    function_lookup = _build_symbol_lookup(nodes)
-
-    records: List[_EntryPointRecord] = []
-    for node in file_nodes:
-        file_path = node.get("file_path")
-        if not file_path:
-            continue
-
-        source_path = _resolve_source_path(file_path)
-        if source_path is None:
-            continue
-
-        try:
-            source_text = source_path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            continue
-
-        if "@" not in source_text:
-            continue
-
-        try:
-            syntax_tree = ast.parse(source_text, filename=str(source_path))
-        except SyntaxError:
-            continue
-
-        frameworks = _detect_frameworks(syntax_tree)
-        for entry in _iter_entry_points(
-            syntax_tree,
-            file_path=file_path,
-            frameworks=frameworks,
-            symbol_lookup=function_lookup,
-        ):
-            records.append(entry)
-
-    records.sort(key=lambda entry: (entry.route, entry.file_path, entry.line_number))
-    return tuple(records)
-
-
-def _load_call_graph_nodes(path: Path) -> Tuple[Mapping[str, Any], ...]:
+def _discover_entry_points(workspace_id: str, database_url: str | None) -> Tuple[_EntryPointRecord, ...]:
+    """Discover entry points from ProfileRecord in database."""
+    session = create_session(database_url)
     try:
-        with path.open("r", encoding="utf-8") as stream:
-            payload = json.load(stream)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return tuple()
+        stmt = select(ProfileRecord).where(
+            ProfileRecord.workspace_id == workspace_id,
+            ProfileRecord.kind == "file",
+            ProfileRecord.file_path.like("%.py"),
+        )
+        file_records = list(session.execute(stmt).scalars())
 
-    nodes = payload.get("nodes", [])
-    return tuple(node for node in nodes if isinstance(node, dict))
+        func_stmt = select(ProfileRecord).where(
+            ProfileRecord.workspace_id == workspace_id,
+            ProfileRecord.kind.in_(["function", "method"]),
+        )
+        func_records = list(session.execute(func_stmt).scalars())
+        function_lookup = _build_symbol_lookup(func_records)
+
+        records: List[_EntryPointRecord] = []
+        for file_record in file_records:
+            if not file_record.source_code or "@" not in file_record.source_code:
+                continue
+            try:
+                syntax_tree = ast.parse(file_record.source_code, filename=file_record.file_path)
+            except SyntaxError:
+                continue
+
+            frameworks = _detect_frameworks(syntax_tree)
+            for entry in _iter_entry_points(
+                syntax_tree, file_path=file_record.file_path, frameworks=frameworks, symbol_lookup=function_lookup
+            ):
+                records.append(entry)
+
+        records.sort(key=lambda e: (e.route, e.file_path, e.line_number))
+        return tuple(records)
+    finally:
+        session.close()
 
 
-def _build_symbol_lookup(
-    nodes: Sequence[Mapping[str, Any]],
-) -> Dict[Tuple[str, Optional[str], str], Mapping[str, Any]]:
-    lookup: Dict[Tuple[str, Optional[str], str], Mapping[str, Any]] = {}
-    for node in nodes:
-        file_path = node.get("file_path")
-        function_name = node.get("function_name")
-        if not file_path or not function_name:
+def _build_symbol_lookup(records: Sequence[ProfileRecord]) -> Dict[Tuple[str, Optional[str], str], ProfileRecord]:
+    lookup: Dict[Tuple[str, Optional[str], str], ProfileRecord] = {}
+    for record in records:
+        if not record.file_path or not record.function_name:
             continue
-
-        class_name = node.get("class_name")
-        if class_name:
-            key = (str(file_path), str(class_name), str(function_name))
-        else:
-            key = (str(file_path), None, str(function_name))
-        lookup[key] = node
+        key = (str(record.file_path), record.class_name, str(record.function_name))
+        lookup[key] = record
     return lookup
-
-
-def _resolve_source_path(file_path: str) -> Optional[Path]:
-    candidate = Path(file_path)
-    if candidate.is_absolute():
-        if candidate.exists():
-            return candidate
-        return None
-
-    for root in SEARCH_ROOTS:
-        resolved = (root / candidate).resolve()
-        if resolved.exists():
-            return resolved
-    return None
 
 
 def _detect_frameworks(tree: ast.AST) -> Iterable[str]:
@@ -211,16 +104,14 @@ def _detect_frameworks(tree: ast.AST) -> Iterable[str]:
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
-                name = alias.name
-                if name.startswith("fastapi"):
+                if alias.name.startswith("fastapi"):
                     frameworks.add("fastapi")
-                if name.startswith("flask"):
+                if alias.name.startswith("flask"):
                     frameworks.add("flask")
-        elif isinstance(node, ast.ImportFrom):
-            module = node.module or ""
-            if module.startswith("fastapi"):
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            if node.module.startswith("fastapi"):
                 frameworks.add("fastapi")
-            if module.startswith("flask"):
+            if node.module.startswith("flask"):
                 frameworks.add("flask")
     return frameworks
 
@@ -230,18 +121,10 @@ def _iter_entry_points(
     *,
     file_path: str,
     frameworks: Iterable[str],
-    symbol_lookup: Mapping[Tuple[str, Optional[str], str], Mapping[str, Any]],
+    symbol_lookup: Mapping[Tuple[str, Optional[str], str], ProfileRecord],
 ) -> Iterator[_EntryPointRecord]:
-    framework_set = set(frameworks)
-
     for node in tree.body:
-        yield from _extract_entry_points_from_node(
-            node,
-            file_path=file_path,
-            frameworks=framework_set,
-            class_name=None,
-            symbol_lookup=symbol_lookup,
-        )
+        yield from _extract_entry_points_from_node(node, file_path=file_path, frameworks=frameworks, class_name=None, symbol_lookup=symbol_lookup)
 
 
 def _extract_entry_points_from_node(
@@ -250,17 +133,17 @@ def _extract_entry_points_from_node(
     file_path: str,
     frameworks: Iterable[str],
     class_name: Optional[str],
-    symbol_lookup: Mapping[Tuple[str, Optional[str], str], Mapping[str, Any]],
+    symbol_lookup: Mapping[Tuple[str, Optional[str], str], ProfileRecord],
 ) -> Iterator[_EntryPointRecord]:
     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
         for info in _extract_route_decorators(node, frameworks):
             key = (file_path, class_name, node.name)
-            cg_node = symbol_lookup.get(key)
-            symbol_label = _derive_symbol_label(cg_node, class_name, node.name)
+            profile = symbol_lookup.get(key)
+            symbol_label = _derive_symbol_label(profile, class_name, node.name)
             qualified_name = _format_qualified_name(file_path, class_name, node.name)
             doc_summary = _summarise_docstring(ast.get_docstring(node))
             yield _EntryPointRecord(
-                call_graph_id=str(cg_node.get("id")) if cg_node else None,
+                call_graph_id=profile.id if profile else None,
                 class_name=class_name,
                 function_name=node.name,
                 symbol=symbol_label,
@@ -276,64 +159,39 @@ def _extract_entry_points_from_node(
     elif isinstance(node, ast.ClassDef):
         for child in node.body:
             yield from _extract_entry_points_from_node(
-                child,
-                file_path=file_path,
-                frameworks=frameworks,
-                class_name=node.name,
-                symbol_lookup=symbol_lookup,
+                child, file_path=file_path, frameworks=frameworks, class_name=node.name, symbol_lookup=symbol_lookup
             )
 
 
-def _extract_route_decorators(
-    node: ast.AST,
-    frameworks: Iterable[str],
-) -> Iterator[_DecoratorInfo]:
+def _extract_route_decorators(node: ast.AST, frameworks: Iterable[str]) -> Iterator[_DecoratorInfo]:
     framework_set = {fw.lower() for fw in frameworks}
-    decorators = getattr(node, "decorator_list", [])
-    for decorator in decorators:
+    for decorator in getattr(node, "decorator_list", []):
         info = _parse_route_decorator(decorator, framework_set)
-        if info is None:
-            continue
-        yield info
+        if info:
+            yield info
 
 
-def _parse_route_decorator(
-    decorator: ast.AST,
-    frameworks: Iterable[str],
-) -> Optional[_DecoratorInfo]:
+def _parse_route_decorator(decorator: ast.AST, frameworks: Iterable[str]) -> Optional[_DecoratorInfo]:
     if not isinstance(decorator, ast.Call):
         return None
-
     base_name, attr_name = _callable_name(decorator.func)
     if attr_name is None:
         return None
-
     attr_lower = attr_name.lower()
     if attr_lower not in HTTP_METHOD_DECORATORS + ROUTE_DECORATORS:
         return None
-
     route_path = _extract_route_path(decorator)
     if route_path is None:
         return None
-
     methods = _extract_http_methods(decorator, attr_lower)
     framework = _infer_framework(base_name, attr_lower, frameworks)
-    decorator_repr = _decorator_repr(base_name, attr_name)
-    lineno = getattr(decorator, "lineno", getattr(decorator, "lineno", 0))
-
-    return _DecoratorInfo(
-        route=route_path,
-        methods=methods,
-        framework=framework,
-        decorator=decorator_repr,
-        lineno=lineno,
-    )
+    decorator_repr = f"{base_name}.{attr_name}" if base_name else attr_name
+    return _DecoratorInfo(route=route_path, methods=methods, framework=framework, decorator=decorator_repr, lineno=getattr(decorator, "lineno", 0))
 
 
 def _callable_name(node: ast.AST) -> Tuple[Optional[str], Optional[str]]:
     if isinstance(node, ast.Attribute):
-        base = _attribute_to_string(node.value)
-        return base, node.attr
+        return _attribute_to_string(node.value), node.attr
     if isinstance(node, ast.Name):
         return None, node.id
     return None, None
@@ -351,43 +209,26 @@ def _attribute_to_string(node: ast.AST) -> Optional[str]:
 def _extract_route_path(decorator: ast.Call) -> Optional[str]:
     path_node = decorator.args[0] if decorator.args else None
     if path_node is None:
-        for keyword in decorator.keywords:
-            if keyword.arg in {"path", "rule", "route"}:
-                path_node = keyword.value
+        for kw in decorator.keywords:
+            if kw.arg in {"path", "rule", "route"}:
+                path_node = kw.value
                 break
     if path_node is None:
         return None
-
-    constant = _literal_string(path_node)
-    if constant is not None:
-        return constant
-
+    if isinstance(path_node, ast.Constant) and isinstance(path_node.value, str):
+        return path_node.value
     try:
-        # Fall back to source representation for non-literal paths.
-        return ast.unparse(path_node)  # type: ignore[attr-defined]
+        return ast.unparse(path_node)
     except Exception:
         return None
 
 
-def _literal_string(node: ast.AST) -> Optional[str]:
-    if isinstance(node, ast.Constant) and isinstance(node.value, str):
-        return node.value
-    return None
-
-
 def _extract_http_methods(decorator: ast.Call, attr_name: str) -> Tuple[str, ...]:
-    explicit_methods = None
-    for keyword in decorator.keywords:
-        if keyword.arg == "methods":
-            explicit_methods = _extract_string_sequence(keyword.value)
-            break
-        if keyword.arg == "method":
-            explicit_methods = _extract_string_sequence(keyword.value)
-            break
-
-    if explicit_methods:
-        return tuple(method.upper() for method in explicit_methods if method)
-
+    for kw in decorator.keywords:
+        if kw.arg in {"methods", "method"}:
+            methods = _extract_string_sequence(kw.value)
+            if methods:
+                return tuple(m.upper() for m in methods if m)
     if attr_name.lower() in HTTP_METHOD_DECORATORS:
         return (attr_name.upper(),)
     if attr_name.lower() == "websocket":
@@ -397,69 +238,42 @@ def _extract_http_methods(decorator: ast.Call, attr_name: str) -> Tuple[str, ...
 
 def _extract_string_sequence(node: ast.AST) -> Optional[Sequence[str]]:
     if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
-        values: List[str] = []
-        for element in node.elts:
-            value = _literal_string(element)
-            if value is None:
+        values = []
+        for el in node.elts:
+            if isinstance(el, ast.Constant) and isinstance(el.value, str):
+                values.append(el.value)
+            else:
                 return None
-            values.append(value)
         return values
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return [node.value]
     return None
 
 
-def _infer_framework(
-    base_name: Optional[str],
-    attr_name: str,
-    frameworks: Iterable[str],
-) -> str:
+def _infer_framework(base_name: Optional[str], attr_name: str, frameworks: Iterable[str]) -> str:
     known = {fw.lower() for fw in frameworks}
     attr_lower = attr_name.lower()
     base_lower = (base_name or "").lower()
-
-    if "fastapi" in known:
-        if attr_lower in HTTP_METHOD_DECORATORS or "router" in base_lower:
-            return "fastapi"
-    if "flask" in known:
-        if attr_lower in HTTP_METHOD_DECORATORS or attr_lower == "route":
-            return "flask"
-
-    if "router" in base_lower or base_lower.endswith("router"):
+    if "fastapi" in known and (attr_lower in HTTP_METHOD_DECORATORS or "router" in base_lower):
+        return "fastapi"
+    if "flask" in known and (attr_lower in HTTP_METHOD_DECORATORS or attr_lower == "route"):
+        return "flask"
+    if "router" in base_lower:
         return "fastapi"
     if "blueprint" in base_lower or base_lower in {"app", "manager", "bp"}:
         return "flask"
-
     return "unknown"
 
 
-def _decorator_repr(base_name: Optional[str], attr_name: str) -> str:
-    if base_name:
-        return f"{base_name}.{attr_name}"
-    return attr_name
+def _derive_symbol_label(profile: Optional[ProfileRecord], class_name: Optional[str], function_name: str) -> str:
+    if profile and profile.label:
+        return profile.label
+    return f"{class_name}.{function_name}" if class_name else function_name
 
 
-def _derive_symbol_label(
-    node: Optional[Mapping[str, Any]],
-    class_name: Optional[str],
-    function_name: str,
-) -> str:
-    if node and "label" in node:
-        return str(node["label"])
-    if class_name:
-        return f"{class_name}.{function_name}"
-    return function_name
-
-
-def _format_qualified_name(
-    file_path: str,
-    class_name: Optional[str],
-    function_name: str,
-) -> str:
+def _format_qualified_name(file_path: str, class_name: Optional[str], function_name: str) -> str:
     module_path = file_path.replace("/", ".").removesuffix(".py")
-    if class_name:
-        return f"{module_path}.{class_name}.{function_name}"
-    return f"{module_path}.{function_name}"
+    return f"{module_path}.{class_name}.{function_name}" if class_name else f"{module_path}.{function_name}"
 
 
 def _summarise_docstring(docstring: Optional[str]) -> Optional[str]:
@@ -471,21 +285,15 @@ def _summarise_docstring(docstring: Optional[str]) -> Optional[str]:
     first_line = stripped.splitlines()[0].strip()
     if not first_line:
         return None
-    if len(first_line) <= 160:
-        return first_line
-    return first_line[:157] + "..."
+    return first_line[:157] + "..." if len(first_line) > 160 else first_line
 
 
 def _filter_entry_points(
-    entries: Sequence[_EntryPointRecord],
-    *,
-    framework: Optional[str],
-    path_contains: Optional[str],
+    entries: Sequence[_EntryPointRecord], *, framework: Optional[str], path_contains: Optional[str]
 ) -> List[_EntryPointRecord]:
-    filtered: List[_EntryPointRecord] = []
+    filtered = []
     framework_lower = framework.lower() if framework else None
     path_filter = path_contains.lower() if path_contains else None
-
     for entry in entries:
         if framework_lower and entry.framework.lower() != framework_lower:
             continue
@@ -495,27 +303,8 @@ def _filter_entry_points(
     return filtered
 
 
-def _resolve_entry_point_node_id(entry: _EntryPointRecord) -> str:
-    """
-    Prefer the structural graph identifier when available; otherwise synthesise
-    a stable node id so downstream consumers can still correlate the handler.
-    """
-    if entry.call_graph_id:
-        return str(entry.call_graph_id)
-
-    file_path = entry.file_path.replace("\\", "/").lstrip("./")
-    base = f"python::{file_path}"
-    if entry.class_name:
-        return f"{base}::{entry.class_name}::{entry.function_name}"
-    return f"{base}::{entry.function_name}"
-
-
-def _entry_point_to_payload(
-    entry: _EntryPointRecord,
-    *,
-    include_docstring: bool,
-) -> Dict[str, Any]:
-    node_id = _resolve_entry_point_node_id(entry)
+def _entry_point_to_payload(entry: _EntryPointRecord, *, include_docstring: bool) -> Dict[str, Any]:
+    node_id = entry.call_graph_id or f"python::{entry.file_path.replace('/', '::')}::{entry.function_name}"
     payload: Dict[str, Any] = {
         "symbol": entry.symbol,
         "qualified_name": entry.qualified_name,
@@ -532,3 +321,21 @@ def _entry_point_to_payload(
     if include_docstring and entry.docstring:
         payload["docstring"] = entry.docstring
     return payload
+
+
+def build_list_entry_point_tool(workspace_id: str, database_url: str | None = None) -> BaseTool:
+    """Create a list_entry_point tool bound to a specific workspace."""
+
+    @tool(args_schema=ListEntryPointInput)
+    def list_entry_point(
+        limit: int = 20, framework: Optional[str] = None, path_contains: Optional[str] = None, include_docstring: bool = False
+    ) -> List[Dict[str, Any]]:
+        """List probable API entry points (e.g., FastAPI routers or Flask views) by inspecting route decorators."""
+        entries = _discover_entry_points(workspace_id, database_url)
+        filtered = _filter_entry_points(entries, framework=framework, path_contains=path_contains)
+        return [_entry_point_to_payload(entry, include_docstring=include_docstring) for entry in filtered[:limit]]
+
+    return list_entry_point
+
+
+__all__ = ["ListEntryPointInput", "build_list_entry_point_tool"]
