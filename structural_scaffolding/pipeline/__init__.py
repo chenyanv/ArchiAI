@@ -1,5 +1,5 @@
-"""Pipeline utilities for asynchronous workflow processing."""
+"""Pipeline utilities for workflow processing."""
 
-from .celery_app import celery_app
+from .workflow_tasks import synthesize_workflow
 
-__all__ = ["celery_app"]
+__all__ = ["synthesize_workflow"]

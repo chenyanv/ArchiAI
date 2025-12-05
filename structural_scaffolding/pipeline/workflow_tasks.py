@@ -5,13 +5,10 @@ import logging
 import os
 from typing import Any, Dict, List, Optional
 
-from celery.utils.log import get_task_logger
-
 from structural_scaffolding.database import create_session
 from structural_scaffolding.utils import db as db_utils
 from structural_scaffolding.utils.tracer import trace_workflow
 
-from .celery_app import celery_app
 from .llm import (
     LLMConfigurationError,
     LLMPermanentError,
@@ -20,7 +17,6 @@ from .llm import (
 )
 
 logger = logging.getLogger(__name__)
-task_logger = get_task_logger(__name__)
 
 PROMPT_TEMPLATE = """You are a principal software architect analysing an end-to-end business workflow.
 
@@ -47,7 +43,6 @@ Rules:
 [Context Information]
 {context}
 """
-_WORKFLOW_MAX_RETRIES = int(os.getenv("WORKFLOW_SYNTHESIS_MAX_RETRIES", "3"))
 
 
 def synthesize_workflow(entry_point_id: str, *, database_url: str | None = None) -> Optional[Dict]:
@@ -62,19 +57,19 @@ def synthesize_workflow(entry_point_id: str, *, database_url: str | None = None)
         try:
             response_text = request_workflow_completion(prompt, expect_json=True)
         except LLMRetryableError:
-            task_logger.warning(
+            logger.warning(
                 "Transient LLM failure while synthesizing workflow",
                 extra={"entry_point_id": entry_point_id},
             )
             raise
         except (LLMConfigurationError, LLMPermanentError):
-            task_logger.exception(
+            logger.exception(
                 "Permanent LLM failure while synthesizing workflow",
                 extra={"entry_point_id": entry_point_id},
             )
             return None
         except Exception:
-            task_logger.exception(
+            logger.exception(
                 "Unexpected failure while invoking LLM for workflow synthesis",
                 extra={"entry_point_id": entry_point_id},
             )
@@ -83,7 +78,7 @@ def synthesize_workflow(entry_point_id: str, *, database_url: str | None = None)
         try:
             parsed_payload = json.loads(_extract_json_block(response_text))
         except json.JSONDecodeError:
-            task_logger.warning(
+            logger.warning(
                 "Received non-JSON response from LLM",
                 extra={"entry_point_id": entry_point_id},
             )
@@ -91,7 +86,7 @@ def synthesize_workflow(entry_point_id: str, *, database_url: str | None = None)
 
         workflow_data = _normalise_workflow_json(parsed_payload)
         if workflow_data is None or not _validate_workflow_json(workflow_data):
-            task_logger.warning("Invalid workflow structure received", extra={"entry_point_id": entry_point_id})
+            logger.warning("Invalid workflow structure received", extra={"entry_point_id": entry_point_id})
             return None
 
         db_utils.save_workflow(entry_point_id, workflow_data, session=session)
@@ -108,23 +103,6 @@ def synthesize_workflow(entry_point_id: str, *, database_url: str | None = None)
         session.close()
 
 
-@celery_app.task(
-    bind=True,
-    name="structural_scaffolding.tasks.synthesize_workflow",
-    autoretry_for=(LLMRetryableError,),
-    retry_backoff=True,
-    retry_jitter=True,
-    retry_kwargs={"max_retries": _WORKFLOW_MAX_RETRIES},
-)
-def synthesize_workflow_task(self, entry_point_id: str, *, database_url: str | None = None) -> Dict | None:
-    """Celery task wrapper for workflow synthesis."""
-
-    result = synthesize_workflow(entry_point_id, database_url=database_url)
-    if result is None:
-        task_logger.warning("Workflow synthesis returned no result", extra={"entry_point_id": entry_point_id})
-        return None
-    task_logger.info("Workflow stored", extra={"entry_point_id": entry_point_id})
-    return result
 
 
 def _build_llm_context(entry_point_id: str, call_chain: List[str], *, session) -> str:
@@ -271,4 +249,4 @@ def _unique_sequence(items: List[str]) -> List[str]:
     return list(seen)
 
 
-__all__ = ["synthesize_workflow", "synthesize_workflow_task"]
+__all__ = ["synthesize_workflow"]

@@ -11,4 +11,5 @@ RUN pip install --upgrade pip && pip install -r requirements.txt
 COPY structural_scaffolding ./structural_scaffolding
 COPY build_structural_scaffolding.py ./build_structural_scaffolding.py
 
-CMD ["celery", "-A", "structural_scaffolding.pipeline", "worker", "--loglevel=info"]
+# Default: keep container running for interactive use
+CMD ["tail", "-f", "/dev/null"]
