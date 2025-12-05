@@ -10,7 +10,7 @@ from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Seque
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
-DEFAULT_GRAPH_PATH = Path("results/graphs/call_graph.json")
+from tools.graph_cache import get_graph_path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SEARCH_ROOTS: Tuple[Path, ...] = (REPO_ROOT, REPO_ROOT / "ragflow-main")
 
@@ -74,13 +74,13 @@ class _EntryPointRecord:
 
 
 def build_list_entry_point_tool(
-    graph_path: Path | str = DEFAULT_GRAPH_PATH,
+    graph_path: Path | str | None = None,
 ) -> StructuredTool:
     """
     Create a LangGraph-compatible tool that enumerates likely HTTP entry points
     (FastAPI/Flask routes) discovered in the project.
     """
-    resolved_path = Path(graph_path).expanduser().resolve()
+    resolved_path = Path(graph_path or get_graph_path()).expanduser().resolve()
 
     def _run(
         limit: int = 20,

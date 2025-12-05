@@ -15,8 +15,7 @@ import networkx as nx
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
-from .graph_cache import _load_cached_graph
-from .graph_queries import DEFAULT_GRAPH_PATH
+from .graph_cache import _load_cached_graph, get_graph_path
 DEFAULT_SCORING_METHOD = "weighted_traffic"
 SUPPORTED_SCORING_METHODS = {DEFAULT_SCORING_METHOD}
 
@@ -152,7 +151,7 @@ def evaluate_neighbors(
     When the next move is already dictated by the objective, the agent should
     follow that plan rather than the ranking. Scores are advisory signals, not directives.
     """
-    graph = _load_cached_graph(str(DEFAULT_GRAPH_PATH))
+    graph = _load_cached_graph(str(get_graph_path()))
     return _evaluate_neighbors(graph, node_id, scoring_method)
 
 

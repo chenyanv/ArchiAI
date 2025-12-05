@@ -11,8 +11,7 @@ import networkx as nx
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
-from .graph_cache import _load_cached_graph
-from .graph_queries import DEFAULT_GRAPH_PATH
+from .graph_cache import _load_cached_graph, get_graph_path
 
 
 class GetNodeDetailsInput(BaseModel):
@@ -38,7 +37,7 @@ def get_node_details(node_id: str) -> Dict[str, Any]:
 
     Returns the data recorded in the call_graph.json export for the specified node.
     """
-    graph = _load_cached_graph(str(DEFAULT_GRAPH_PATH))
+    graph = _load_cached_graph(str(get_graph_path()))
     return _get_node_details(graph, node_id)
 
 

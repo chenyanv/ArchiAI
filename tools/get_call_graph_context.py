@@ -12,8 +12,7 @@ from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
 from load_graph import DEFAULT_EDGE_WEIGHT
-from .graph_cache import _load_cached_graph
-from .graph_queries import DEFAULT_GRAPH_PATH
+from .graph_cache import _load_cached_graph, get_graph_path
 
 
 def _normalise_category(node_attrs: Mapping[str, Any]) -> str:
@@ -227,7 +226,7 @@ def get_call_graph_context(node_id: str) -> Dict[str, Any]:
 
     Includes the downstream calls it makes and the upstream callers that reference it.
     """
-    graph = _load_cached_graph(str(DEFAULT_GRAPH_PATH))
+    graph = _load_cached_graph(str(get_graph_path()))
     if node_id not in graph:
         raise ValueError(f"Node '{node_id}' does not exist in the call graph.")
 

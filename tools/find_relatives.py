@@ -13,7 +13,6 @@ from langchain_core.tools import tool
 from pydantic import BaseModel, Field, validator
 
 from .graph_queries import (
-    DEFAULT_GRAPH_PATH,
     collect_edge_types,
     iter_edge_bundles,
     load_graph_cached,
@@ -180,7 +179,7 @@ def find_relatives(
     """
     if relation_types is None:
         relation_types = ["CALLS"]
-    graph = load_graph_cached(DEFAULT_GRAPH_PATH)
+    graph = load_graph_cached(None)
     relation_set = tuple({edge.upper() for edge in relation_types})
     summaries: List[Dict[str, Any]] = []
 

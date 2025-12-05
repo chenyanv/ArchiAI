@@ -11,7 +11,6 @@ from langchain_core.tools import tool
 from pydantic import BaseModel, Field, validator
 
 from .graph_queries import (
-    DEFAULT_GRAPH_PATH,
     aggregate_weight,
     collect_edge_types,
     iter_edge_bundles,
@@ -123,7 +122,7 @@ def get_neighbors(
     Supports inbound, outbound, or bidirectional traversal as well as filtering
     by edge type and node attributes.
     """
-    graph = load_graph_cached(DEFAULT_GRAPH_PATH)
+    graph = load_graph_cached(None)
     summaries: List[Dict[str, Any]] = []
     for node_id in nodes:
         if node_id not in graph:

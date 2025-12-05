@@ -8,9 +8,7 @@ from pydantic import BaseModel, Field
 from langchain_core.tools import StructuredTool
 
 from load_graph import DEFAULT_EDGE_WEIGHT
-from tools.graph_cache import _load_cached_graph
-
-DEFAULT_GRAPH_PATH = Path("results/graphs/call_graph.json")
+from tools.graph_cache import _load_cached_graph, get_graph_path
 WEIGHT_ATTR = "weight"
 CATEGORY_RANK_MULTIPLIER: Dict[str, float] = {
     "service": 4.0,
@@ -172,15 +170,17 @@ def _format_node_entry(
 
 
 def build_call_graph_pagerank_tool(
-    graph_path: Path | str = DEFAULT_GRAPH_PATH,
+    graph_path: Path | str | None = None,
 ) -> StructuredTool:
     """
     Create a LangGraph-compatible tool that returns the top PageRank nodes
     from the cached call graph.
     """
-    resolved_path = Path(graph_path).expanduser().resolve()
 
     def _run(limit: int = 10) -> List[Dict[str, Any]]:
+        # Resolve path at runtime to respect environment variable
+        path = graph_path or get_graph_path()
+        resolved_path = Path(path).expanduser().resolve()
         graph = _load_cached_graph(str(resolved_path))
         scores = _compute_pagerank(graph)
         if not scores:

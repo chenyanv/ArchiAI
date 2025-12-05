@@ -11,7 +11,6 @@ from langchain_core.tools import tool
 from pydantic import BaseModel, Field, validator
 
 from .graph_queries import (
-    DEFAULT_GRAPH_PATH,
     EdgeHop,
     iter_neighbors_by_type,
     load_graph_cached,
@@ -144,7 +143,7 @@ def find_paths(
     Traversal respects the requested edge types and stops once the
     depth or path limits are hit.
     """
-    graph = load_graph_cached(DEFAULT_GRAPH_PATH)
+    graph = load_graph_cached(None)
     edge_filter = tuple({edge_type.upper() for edge_type in (edge_types or list(DEFAULT_EDGE_TYPES)) if edge_type})
     targets = {node for node in end_nodes if node in graph}
 

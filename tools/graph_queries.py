@@ -6,13 +6,11 @@ from typing import Any, Dict, Iterable, Iterator, List, Mapping, MutableMapping,
 
 import networkx as nx
 
-from tools.graph_cache import _load_cached_graph
-
-DEFAULT_GRAPH_PATH = Path("results/graphs/call_graph.json")
+from tools.graph_cache import DEFAULT_GRAPH_PATH, _load_cached_graph, get_graph_path
 
 
 def _resolve_path(graph_path: Path | str | None) -> Path:
-    resolved = Path(graph_path or DEFAULT_GRAPH_PATH).expanduser().resolve()
+    resolved = Path(graph_path or get_graph_path()).expanduser().resolve()
     if not resolved.exists():
         raise FileNotFoundError(f"Call graph not found: {resolved}")
     return resolved
