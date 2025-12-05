@@ -157,6 +157,9 @@ class ComponentDrilldownRequest(BaseModel):
         default=None,
         description="Optional directives from orchestration about investigative goals.",
     )
+    workspace_id: str = Field(
+        ..., description="Unique identifier for the workspace being analyzed."
+    )
     database_url: Optional[str] = Field(
         default=None,
         description="Optional override for the structural scaffolding database URL.",

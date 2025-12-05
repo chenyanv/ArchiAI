@@ -12,10 +12,11 @@ from .schemas import (
     NavigationNodeType,
     NextLayerView,
 )
-from .toolkit import DEFAULT_SUBAGENT_TOOLS
+from .toolkit import build_workspace_tools
 
 __all__ = [
     "build_component_agent",
+    "build_workspace_tools",
     "run_component_agent",
     "ComponentDrilldownRequest",
     "ComponentDrilldownResponse",
@@ -26,5 +27,4 @@ __all__ = [
     "NavigationNode",
     "NavigationNodeType",
     "NextLayerView",
-    "DEFAULT_SUBAGENT_TOOLS",
 ]

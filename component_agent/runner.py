@@ -30,33 +30,16 @@ def _parse_breadcrumbs(raw: str | None) -> List[NavigationBreadcrumb]:
         raise SystemExit(f"Invalid breadcrumbs JSON: {exc}") from exc
     if not isinstance(payload, list):
         raise SystemExit("Breadcrumbs JSON must be a list of objects.")
-    breadcrumbs: List[NavigationBreadcrumb] = []
-    for item in payload:
-        breadcrumbs.append(NavigationBreadcrumb.model_validate(item))
-    return breadcrumbs
+    return [NavigationBreadcrumb.model_validate(item) for item in payload]
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the component drilldown agent.")
-    parser.add_argument(
-        "component_id",
-        help="Component identifier as emitted by the orchestration agent.",
-    )
-    parser.add_argument(
-        "--plan-path",
-        default="results/orchestration_plan.json",
-        help="Path to the orchestration output containing component cards.",
-    )
-    parser.add_argument(
-        "--breadcrumbs",
-        default=None,
-        help="Optional JSON array describing the drilldown path to resume.",
-    )
-    parser.add_argument(
-        "--database-url",
-        default=None,
-        help="Optional structural scaffolding database URL override.",
-    )
+    parser.add_argument("workspace_id", help="Workspace identifier (e.g., owner-repo).")
+    parser.add_argument("component_id", help="Component identifier as emitted by the orchestration agent.")
+    parser.add_argument("--plan-path", default="results/orchestration_plan.json", help="Path to orchestration output.")
+    parser.add_argument("--breadcrumbs", default=None, help="Optional JSON array describing drilldown path.")
+    parser.add_argument("--database-url", default=None, help="Optional database URL override.")
     args = parser.parse_args()
 
     plan_path = Path(args.plan_path).expanduser().resolve()
@@ -67,6 +50,7 @@ def main() -> None:
         component_card=component_card,
         breadcrumbs=breadcrumbs,
         subagent_payload=coerce_subagent_payload(component_card),
+        workspace_id=args.workspace_id,
         database_url=args.database_url,
     )
     response = run_component_agent(request)

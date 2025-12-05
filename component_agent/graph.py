@@ -16,7 +16,7 @@ from .llm import build_component_chat_model
 from .prompt import build_component_system_prompt, format_component_request
 from .schemas import ComponentDrilldownRequest, ComponentDrilldownResponse
 from .token_tracker import TokenTracker
-from .toolkit import DEFAULT_SUBAGENT_TOOLS
+from .toolkit import build_workspace_tools
 
 
 LogFn = Callable[[str], None]
@@ -107,7 +107,7 @@ class InstrumentedToolNode:
 
 def build_component_agent(
     *,
-    tools: Optional[Sequence[BaseTool]] = None,
+    tools: Sequence[BaseTool],
     temperature: float = 0.0,
     logger: Optional[LogFn] = None,
     debug: bool = False,
@@ -115,7 +115,7 @@ def build_component_agent(
     llm_context_logger: Optional[LLMContextLogger] = None,
 ):
     model = build_component_chat_model(temperature=temperature)
-    toolset = list(tools or DEFAULT_SUBAGENT_TOOLS)
+    toolset = list(tools)
     model_with_tools = model.bind_tools(toolset)
 
     workflow = StateGraph(ComponentAgentState)
@@ -211,7 +211,8 @@ def run_component_agent(
 ) -> ComponentDrilldownResponse:
     """Execute the sub-agent and return a structured drilldown response."""
 
-    toolset = list(tools or DEFAULT_SUBAGENT_TOOLS)
+    # Build tools dynamically for the workspace if not provided
+    toolset = list(tools) if tools else build_workspace_tools(request.workspace_id, request.database_url)
     graph = build_component_agent(
         tools=toolset,
         temperature=temperature,

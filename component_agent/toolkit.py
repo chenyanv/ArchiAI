@@ -2,46 +2,43 @@
 
 from __future__ import annotations
 
-from typing import Dict, Iterable, List, Sequence
+from typing import Dict, List, Sequence
 
 from langchain_core.tools import BaseTool
 
 from tools import (
-    call_graph_pagerank_tool,
-    evaluate_neighbors,
-    find_paths,
-    find_relatives,
-    get_call_graph_context,
-    get_neighbors,
-    get_node_details,
-    get_source_code,
-    list_core_models,
-    list_entry_point_tool,
+    build_call_graph_pagerank_tool,
+    build_evaluate_neighbors_tool,
+    build_find_paths_tool,
+    build_find_relatives_tool,
+    build_get_call_graph_context_tool,
+    build_get_neighbors_tool,
+    build_get_node_details_tool,
+    build_get_source_code_tool,
+    build_list_core_models_tool,
+    build_list_entry_point_tool,
 )
 
 
-DEFAULT_SUBAGENT_TOOLS: List[BaseTool] = [
-    call_graph_pagerank_tool,
-    find_paths,
-    find_relatives,
-    evaluate_neighbors,
-    get_neighbors,
-    get_node_details,
-    get_call_graph_context,
-    list_entry_point_tool,
-    list_core_models,
-    get_source_code,
-]
+def build_workspace_tools(workspace_id: str, database_url: str | None = None) -> List[BaseTool]:
+    """Create all tools bound to a specific workspace."""
+    return [
+        build_call_graph_pagerank_tool(workspace_id, database_url),
+        build_find_paths_tool(workspace_id, database_url),
+        build_find_relatives_tool(workspace_id, database_url),
+        build_evaluate_neighbors_tool(workspace_id, database_url),
+        build_get_neighbors_tool(workspace_id, database_url),
+        build_get_node_details_tool(workspace_id, database_url),
+        build_get_call_graph_context_tool(workspace_id, database_url),
+        build_list_entry_point_tool(workspace_id, database_url),
+        build_list_core_models_tool(workspace_id, database_url),
+        build_get_source_code_tool(workspace_id, database_url),
+    ]
 
 
 def summarise_tools(tools: Sequence[BaseTool]) -> List[Dict[str, str]]:
-    catalog: List[Dict[str, str]] = []
-    for tool in tools:
-        catalog.append({
-            "name": getattr(tool, "name", "unknown"),
-            "description": getattr(tool, "description", ""),
-        })
-    return catalog
+    """Return a catalog of tool names and descriptions."""
+    return [{"name": getattr(tool, "name", "unknown"), "description": getattr(tool, "description", "")} for tool in tools]
 
 
-__all__ = ["DEFAULT_SUBAGENT_TOOLS", "summarise_tools"]
+__all__ = ["build_workspace_tools", "summarise_tools"]
