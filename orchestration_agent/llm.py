@@ -1,15 +1,20 @@
+"""LLM provider abstraction using LangChain for unified interface."""
+
 from __future__ import annotations
 
 import os
 from enum import Enum
 from functools import lru_cache
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, Optional
 
-from openai import APIConnectionError, APIError, OpenAI, RateLimitError
+from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.messages import HumanMessage
+
 
 class LLMProvider(str, Enum):
     OPENAI = "openai"
     GEMINI = "gemini"
+
 
 DEFAULT_MODEL_OPENAI = "gpt-4o-mini"
 DEFAULT_MODEL_GEMINI = "gemini-2.5-pro"
@@ -70,269 +75,48 @@ def _resolve_provider() -> LLMProvider:
     return LLMProvider.GEMINI
 
 
-@lru_cache(maxsize=1)
-def _get_openai_client() -> OpenAI:
-    api_key = _resolve_api_key(LLMProvider.OPENAI)
-    return OpenAI(api_key=api_key)
-
-
-def _coalesce_openai_response_text(response: Any) -> Optional[str]:
-    """
-    Extract textual content from an OpenAI Chat Completions payload.
-    """
-    fragments: list[str] = []
-    choices = getattr(response, "choices", None) or []
-    for choice in choices:
-        message = getattr(choice, "message", None)
-        if message:
-            content = getattr(message, "content", None)
-            if isinstance(content, str) and content.strip():
-                fragments.append(content.strip())
-    if fragments:
-        return "\n".join(fragments)
-    return None
-
-def _coalesce_gemini_response_text(response: Any) -> tuple[str | None, set[str] | None]:
-    """
-    Extract textual content from a Gemini API payload, handling safety blocks.
-    """
-    blocked_categories: set[str] = set()
-
-    try:
-        text = getattr(response, "text", None)
-    except ValueError:
-        # This occurs when the response is blocked.
-        text = None
-
-    if isinstance(text, str) and text.strip():
-        return text.strip(), None
-
-    candidates = getattr(response, "candidates", None) or []
-    if not candidates and hasattr(response, "prompt_feedback"):
-        feedback = getattr(response, "prompt_feedback")
-        block_reason = getattr(feedback, "block_reason", None)
-        if block_reason:
-            blocked_categories.add(str(block_reason))
-
-    for candidate in candidates:
-        safety_ratings = getattr(candidate, "safety_ratings", None) or []
-        is_blocked = False
-        for rating in safety_ratings:
-            if getattr(rating, "blocked", False):
-                is_blocked = True
-                category = getattr(rating, "category", None)
-                blocked_categories.add(str(category) if category else "unspecified")
-        if is_blocked:
-            continue
-
-        fragments: list[str] = []
-        content = getattr(candidate, "content", None)
-        if content is None and isinstance(candidate, Mapping):
-            content = candidate.get("content")
-        parts = getattr(content, "parts", None) if content is not None else None
-        if parts is None and isinstance(content, Mapping):
-            parts = content.get("parts")
-        if parts:
-            for part in parts:
-                piece = getattr(part, "text", None)
-                if piece is None and isinstance(part, Mapping):
-                    piece = part.get("text")
-                if piece:
-                    fragments.append(str(piece))
-        
-        candidate_text = "".join(fragments).strip()
-        if candidate_text:
-            return candidate_text, None
-
-    return None, blocked_categories or None
-
-
-def _summarise_gemini_debug(response: Any) -> Dict[str, Any]:
-    """
-    Build a lightweight, JSON-serialisable diagnostic payload for Gemini responses that
-    lack textual content. Keeps personal data out while surfacing safety and finish info.
-    """
-    metadata: Dict[str, Any] = {}
-
-    prompt_feedback = getattr(response, "prompt_feedback", None)
-    if prompt_feedback is not None:
-        block_reason = getattr(prompt_feedback, "block_reason", None)
-        if block_reason:
-            metadata["prompt_block_reason"] = str(block_reason)
-        safety_ratings = getattr(prompt_feedback, "safety_ratings", None) or []
-        feedback_safety: List[Dict[str, Any]] = []
-        for rating in safety_ratings:
-            feedback_safety.append(
-                {
-                    "category": str(getattr(rating, "category", None)),
-                    "probability": getattr(rating, "probability", None),
-                    "blocked": getattr(rating, "blocked", None),
-                }
-            )
-        if feedback_safety:
-            metadata["prompt_feedback_safety"] = feedback_safety
-
-    candidates = getattr(response, "candidates", None) or []
-    candidate_diagnostics: List[Dict[str, Any]] = []
-    for index, candidate in enumerate(candidates[:3]):
-        finish_reason = getattr(candidate, "finish_reason", None)
-        safety_ratings = getattr(candidate, "safety_ratings", None) or []
-        candidate_safety: List[Dict[str, Any]] = []
-        for rating in safety_ratings:
-            candidate_safety.append(
-                {
-                    "category": str(getattr(rating, "category", None)),
-                    "probability": getattr(rating, "probability", None),
-                    "blocked": getattr(rating, "blocked", None),
-                }
-            )
-
-        content = getattr(candidate, "content", None)
-        if content is None and isinstance(candidate, Mapping):
-            content = candidate.get("content")
-        parts = getattr(content, "parts", None) if content is not None else None
-        if parts is None and isinstance(content, Mapping):
-            parts = content.get("parts")
-
-        part_preview: List[str] = []
-        if parts:
-            for part in list(parts)[:3]:
-                piece = getattr(part, "text", None)
-                if piece is None and isinstance(part, Mapping):
-                    piece = part.get("text")
-                if piece:
-                    snippet = str(piece).strip()
-                    if len(snippet) > 160:
-                        snippet = f"{snippet[:157]}..."
-                    part_preview.append(snippet)
-                else:
-                    part_preview.append(f"<no-text:{type(part).__name__}>")
-
-        candidate_diagnostics.append(
-            {
-                "index": index,
-                "finish_reason": str(finish_reason) if finish_reason is not None else None,
-                "part_count": len(parts) if parts is not None else 0,
-                "part_preview": part_preview,
-                "safety": candidate_safety,
-            }
-        )
-
-    if candidate_diagnostics:
-        metadata["candidate_diagnostics"] = candidate_diagnostics
-
-    try:
-        text_attr = getattr(response, "text", None)
-    except ValueError:
-        text_attr = None
-    if isinstance(text_attr, str):
-        metadata["raw_text_length"] = len(text_attr.strip())
-
-    return metadata
-
-
-def _invoke_gemini(
-    prompt: str,
-    *,
+@lru_cache(maxsize=2)
+def _get_llm(
+    provider: LLMProvider,
     temperature: Optional[float] = None,
     max_output_tokens: Optional[int] = None,
-) -> str:
-    api_key = _resolve_api_key(LLMProvider.GEMINI)
-    model_name = _resolve_model(LLMProvider.GEMINI)
-    try:
-        import google.generativeai as genai
-        from google.api_core import exceptions as google_exceptions
-    except ImportError as exc:
-        raise LLMConfigurationError("google-generativeai package is not installed") from exc
+) -> BaseChatModel:
+    """Create and cache a LangChain chat model for the given provider."""
+    api_key = _resolve_api_key(provider)
+    model_name = _resolve_model(provider)
 
-    genai.configure(api_key=api_key)
-    
-    generation_config = {
-        "temperature": temperature,
-        "max_output_tokens": max_output_tokens,
-        "response_mime_type": "application/json",
-    }
+    if provider is LLMProvider.GEMINI:
+        try:
+            from langchain_google_genai import ChatGoogleGenerativeAI
+        except ImportError as exc:
+            raise LLMConfigurationError(
+                "langchain-google-genai package is not installed"
+            ) from exc
 
-    prompt_segments = _segment_prompt_for_gemini(prompt)
-    contents = [
-        {
-            "role": "user",
-            "parts": [{"text": segment}],
-        }
-        for segment in prompt_segments
-    ]
-
-    try:
-        model_ref = genai.GenerativeModel(model_name, generation_config=generation_config)
-        response = model_ref.generate_content(contents)
-    except google_exceptions.ResourceExhausted as exc:
-        raise LLMResponseError("Gemini quota exhausted or rate limited") from exc
-    except google_exceptions.ServiceUnavailable as exc:
-        raise LLMResponseError("Gemini service unavailable") from exc
-    except google_exceptions.GoogleAPIError as exc:
-        raise LLMResponseError(str(exc)) from exc
-    except Exception as exc:
-        raise LLMResponseError("Unexpected error calling Gemini") from exc
-
-    text, blocked_categories = _coalesce_gemini_response_text(response)
-    if text:
-        return text
-
-    if blocked_categories:
-        categories = ", ".join(sorted(blocked_categories))
-        raise LLMResponseError(
-            f"Gemini response blocked by safety filters ({categories})",
-            metadata=_summarise_gemini_debug(response),
+        return ChatGoogleGenerativeAI(
+            model=model_name,
+            google_api_key=api_key,
+            temperature=temperature,
+            max_output_tokens=max_output_tokens,
         )
+    else:
+        try:
+            from langchain_openai import ChatOpenAI
+        except ImportError as exc:
+            raise LLMConfigurationError(
+                "langchain-openai package is not installed"
+            ) from exc
 
-    raise LLMResponseError(
-        "Gemini response did not include content",
-        metadata=_summarise_gemini_debug(response),
-    )
+        kwargs: Dict[str, Any] = {
+            "model": model_name,
+            "api_key": api_key,
+        }
+        if temperature is not None:
+            kwargs["temperature"] = temperature
+        if max_output_tokens is not None:
+            kwargs["max_tokens"] = max_output_tokens
 
-
-def _segment_prompt_for_gemini(prompt: str, *, max_chunk_chars: int = 3500) -> List[str]:
-    """
-    Split long prompts into smaller text parts for Gemini to reduce blocking.
-    """
-    stripped = prompt.strip()
-    if not stripped:
-        return [prompt]
-
-    segments: List[str] = []
-    current: List[str] = []
-    current_len = 0
-
-    def flush_current() -> None:
-        nonlocal current, current_len
-        if current:
-            combined = "\n\n".join(current).strip()
-            if combined:
-                segments.append(combined)
-        current = []
-        current_len = 0
-
-    for block in stripped.split("\n\n"):
-        block = block.strip()
-        if not block:
-            continue
-        block_len = len(block)
-        if current_len and current_len + 2 + block_len > max_chunk_chars:
-            flush_current()
-        if block_len > max_chunk_chars:
-            # Hard split oversized block
-            for idx in range(0, block_len, max_chunk_chars):
-                chunk = block[idx : idx + max_chunk_chars].strip()
-                if chunk:
-                    segments.append(chunk)
-            continue
-
-        current.append(block)
-        current_len += (2 if current_len else 0) + block_len
-
-    flush_current()
-
-    return segments or [stripped]
+        return ChatOpenAI(**kwargs)
 
 
 def invoke_llm(
@@ -343,65 +127,62 @@ def invoke_llm(
     max_output_tokens: Optional[int] = None,
 ) -> str:
     """
-    Execute a text-only LLM call.
+    Execute a text-only LLM call using LangChain's unified interface.
+
+    Args:
+        prompt: The prompt text to send to the LLM.
+        temperature: Sampling temperature (0.0-1.0).
+        top_p: Nucleus sampling parameter (currently only used by OpenAI).
+        max_output_tokens: Maximum tokens in the response.
+
+    Returns:
+        The LLM's response text.
+
+    Raises:
+        LLMConfigurationError: If the LLM client cannot be configured.
+        LLMResponseError: If the LLM call fails or returns empty content.
     """
     provider = _resolve_provider()
-    if provider is LLMProvider.GEMINI:
-        return _invoke_gemini(
-            prompt,
-            temperature=temperature,
-            max_output_tokens=max_output_tokens,
-        )
-
-    # Fallback to OpenAI
-    client = _get_openai_client()
-    request_params: Dict[str, Any] = {
-        "model": _resolve_model(LLMProvider.OPENAI),
-        "messages": [{"role": "user", "content": prompt}],
-    }
-
-    if temperature is not None:
-        request_params["temperature"] = temperature
-    if top_p is not None:
-        request_params["top_p"] = top_p
-    if max_output_tokens is not None:
-        request_params["max_tokens"] = max_output_tokens
 
     try:
-        response = client.chat.completions.create(**request_params)
-    except RateLimitError as exc:
-        raise LLMResponseError(
-            "OpenAI rate limit or quota exceeded.",
-            metadata={"error_type": "RateLimitError"},
-        ) from exc
-    except APIConnectionError as exc:
-        raise LLMResponseError(
-            "Failed to reach OpenAI.",
-            metadata={"error_type": "APIConnectionError", "error_message": str(exc)},
-        ) from exc
-    except APIError as exc:
-        raise LLMResponseError(
-            "OpenAI API error.",
-            metadata={
-                "error_type": exc.__class__.__name__,
-                "status_code": getattr(exc, "status_code", None),
-                "error_message": str(exc),
-            },
-        ) from exc
+        llm = _get_llm(provider, temperature, max_output_tokens)
     except Exception as exc:
+        raise LLMConfigurationError(f"Failed to initialize {provider.value} client") from exc
+
+    try:
+        response = llm.invoke([HumanMessage(content=prompt)])
+    except Exception as exc:
+        error_type = exc.__class__.__name__
+        error_message = str(exc)
+
+        # Handle common error types
+        if "rate" in error_message.lower() or "quota" in error_message.lower():
+            raise LLMResponseError(
+                f"{provider.value} rate limit or quota exceeded.",
+                metadata={"error_type": error_type},
+            ) from exc
+        if "connection" in error_message.lower() or "unavailable" in error_message.lower():
+            raise LLMResponseError(
+                f"Failed to reach {provider.value} API.",
+                metadata={"error_type": error_type},
+            ) from exc
+        if "blocked" in error_message.lower() or "safety" in error_message.lower():
+            raise LLMResponseError(
+                f"{provider.value} response blocked by safety filters.",
+                metadata={"error_type": error_type, "error_message": error_message},
+            ) from exc
+
         raise LLMResponseError(
-            "Unexpected error invoking OpenAI.",
-            metadata={"error_type": exc.__class__.__name__, "error_message": str(exc)},
+            f"Error invoking {provider.value}: {error_message}",
+            metadata={"error_type": error_type},
         ) from exc
 
-    text = _coalesce_openai_response_text(response)
-    if text:
-        return text
+    # Extract text from response
+    text = getattr(response, "content", None)
+    if isinstance(text, str) and text.strip():
+        return text.strip()
 
     raise LLMResponseError(
-        "OpenAI returned empty content.",
-        metadata={
-            "response_id": getattr(response, "id", None),
-            "model": request_params["model"],
-        },
+        f"{provider.value} returned empty content.",
+        metadata={"response_type": type(response).__name__},
     )
