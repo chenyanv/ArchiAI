@@ -77,17 +77,6 @@ Return a single JSON object with this structure (strictly follow field order):
       "core_models": [
         {{"node_id": "node-789", "model": "ModelName"}}
       ],
-      "evidence": {{
-        "landmarks": [
-          {{"node_id": "node-456", "symbol": "..."}}
-        ],
-        "entry_points": [
-          {{"node_id": "node-123", "route": "..."}}
-        ],
-        "models": [
-          {{"node_id": "node-789", "model": "..."}}
-        ]
-      }},
       "objective": [
         "Follow-up question 1",
         "Follow-up question 2"

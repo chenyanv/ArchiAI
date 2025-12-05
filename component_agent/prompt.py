@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import Iterable, Mapping, Sequence
+from typing import Mapping, Sequence
 
 from .schemas import ComponentDrilldownRequest, NavigationBreadcrumb
 
@@ -72,47 +72,13 @@ TITLE NAMING GUIDELINES:
 - It's OK to include architectural hints in titles: "(Factory)", "(Singleton)", "Facade", "Pipeline"
 - Put detailed technical explanation in `description`, but titles can be more technical than pure business terms
 
-RESPONSE SCHEMA:
-{
-  "component_id": "...",
-  "agent_goal": "Educational goal for this breakdown (include learning objective)",
-  "breadcrumbs": [...],
-  "next_layer": {
-    "focus_label": "Clear label describing this layer's focus",
-    "focus_kind": "business_workflow|capability_types|component_breakdown|source_layer",
-    "rationale": "Why this breakdown strategy - explain the architecture or design pattern being revealed",
-    "is_sequential": false,
-    "workflow_narrative": "1-3 sentences explaining the workflow/process (for sequential flows) - include both business flow AND technical implementation approach",
-    "nodes": [
-      {
-        "node_key": "kebab-case-id",
-        "title": "Clear title (can include technical hints like pattern names)",
-        "node_type": "capability|category|workflow|service|function|class|file|...",
-        "description": "Comprehensive description including: (1) business purpose, (2) how it's implemented, (3) key patterns/architecture used, (4) how it connects to other components. Include concrete symbols (e.g., 'Implemented in payment_service.py::process_payment using the Strategy pattern')",
-        "action": {"kind": "component_drilldown|inspect_source", "target_id": "...", "parameters": {}},
-        "evidence": [{"source_type": "landmark|tool_result|...", ...}],
-        "sequence_order": null
-      }
-    ]
-  },
-  "notes": ["Optional: Add learning notes about interesting patterns, trade-offs, or architecture decisions worth highlighting"]
-}
-
-DESCRIPTION FIELD GUIDANCE:
-The `description` field is where you teach. Include:
-- **Business purpose**: What problem does this solve?
-- **Technical implementation**: What code/pattern implements it? (with symbols)
-- **Architecture context**: How does it fit into the larger system?
-- **Learning value**: What patterns or concepts are demonstrated here?
-
-Example good descriptions:
-- "Validates incoming API requests using a Chain of Responsibility pattern with multiple validator stages (auth, schema, business rules). Implemented in api/validators/request_pipeline.py. This pattern allows easy extension of validation logic."
-- "Encodes text into vector embeddings using the Strategy pattern to support multiple embedding models (OpenAI, Cohere, local). See llm_service.py::LLMBundle.encode(). The abstraction allows swapping models without changing client code."
-
-ENUMS:
-- action.kind: component_drilldown, inspect_source, inspect_node, inspect_tool, graph_overlay
-- node_type: capability, category, workflow, pipeline, agent, file, function, class, model, dataset, prompt, tool, service, graph, source
-- evidence.source_type: landmark, entry_point, model, file, tool_result, custom
+RESPONSE GUIDANCE:
+- agent_goal: Include a learning objective for junior engineers
+- focus_kind: business_workflow | capability_types | component_breakdown | source_layer
+- is_sequential: true for workflows with clear step order, false for parallel capabilities
+- workflow_narrative: Only needed when is_sequential=true
+- node description: Include (1) business purpose, (2) implementation details with code symbols, (3) patterns used
+- action.kind: component_drilldown (drill deeper) or inspect_source (show code)
 
 CRITICAL RULES:
 - 3-6 nodes per response (focused learning, not overwhelming)
@@ -139,44 +105,40 @@ def _format_breadcrumbs(breadcrumbs: Sequence[NavigationBreadcrumb]) -> Sequence
     return formatted
 
 
-def _format_tool_catalog(tools: Iterable[Mapping[str, str]]) -> str:
-    catalog_lines = []
-    for index, tool in enumerate(tools, start=1):
-        name = tool.get("name", "unknown-tool")
-        description = tool.get("description", "")
-        catalog_lines.append(f"{index}. {name}: {description}")
-    return "\n".join(catalog_lines) if catalog_lines else "(no tools provided)"
-
-
 def format_component_request(
     request: ComponentDrilldownRequest,
-    *,
-    tool_catalog: Iterable[Mapping[str, str]] = (),
 ) -> str:
-    """Build the user-facing portion of the prompt with dynamic context."""
+    """Build the user-facing portion of the prompt with dynamic context.
 
-    component_snapshot = json.dumps(
-        request.component_card,
-        ensure_ascii=False,
-        indent=2,
-    )
+    Note: AVAILABLE TOOLS section removed - tools are already bound via bind_tools().
+    Note: Only essential fields from component_card are included to reduce token usage.
+    """
+    # Extract only essential fields from component_card (no duplicates)
+    card = request.component_card
+    compact_card = {
+        "component_id": card.get("component_id"),
+        "module_name": card.get("module_name"),
+        "business_signal": card.get("business_signal"),
+        "leading_landmarks": card.get("leading_landmarks", []),
+        "core_models": card.get("core_models", []),
+    }
+    # Only include entry_points if non-empty
+    entry_points = card.get("primary_entry_points", [])
+    if entry_points:
+        compact_card["primary_entry_points"] = entry_points
+
     payload = {
-        "component_card": json.loads(component_snapshot),
+        "component_card": compact_card,
         "breadcrumbs": _format_breadcrumbs(request.breadcrumbs),
-        "subagent_payload": request.subagent_payload or {},
-        "structural_database_url": request.database_url,
+        "objectives": (request.subagent_payload or {}).get("objective", []),
     }
     formatted_payload = json.dumps(payload, ensure_ascii=False, indent=2)
-    tools_text = _format_tool_catalog(tool_catalog)
 
     return f"""# COMPONENT CONTEXT
 {formatted_payload}
 
-# AVAILABLE TOOLS
-{tools_text}
-
 # TASK
-Use the context above to decide what the next meaningful layer should be. Plan, call tools when needed, and respond with JSON only.
+Use tools to explore the codebase, then respond with JSON only.
 """
 
 
