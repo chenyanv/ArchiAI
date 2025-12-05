@@ -1,54 +1,26 @@
-"""
-Trace simple paths between node sets while respecting call graph edge types.
-"""
+"""Trace simple paths between node sets while respecting call graph edge types."""
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
-from langchain_core.tools import tool
-from pydantic import BaseModel, Field, validator
+from langchain_core.tools import BaseTool, tool
+from pydantic import BaseModel, Field, field_validator
 
-from .graph_queries import (
-    EdgeHop,
-    iter_neighbors_by_type,
-    load_graph_cached,
-    node_snapshot,
-)
+from .graph_queries import EdgeHop, get_graph, iter_neighbors_by_type, node_snapshot
 
 DEFAULT_EDGE_TYPES = ("CALLS", "USES", "DATA_ACCESS")
 
 
 class FindPathsInput(BaseModel):
-    start_nodes: List[str] = Field(
-        ...,
-        min_items=1,
-        description="Entry nodes where traversal begins.",
-    )
-    end_nodes: List[str] = Field(
-        ...,
-        min_items=1,
-        description="Target nodes that stop traversal when reached.",
-    )
-    edge_types: Optional[List[str]] = Field(
-        default=list(DEFAULT_EDGE_TYPES),
-        description="Edge types that are allowed in the traversal.",
-    )
-    max_depth: int = Field(
-        default=8,
-        ge=1,
-        le=20,
-        description="Maximum number of hops in a path (edges).",
-    )
-    max_paths: int = Field(
-        default=25,
-        ge=1,
-        le=200,
-        description="Maximum number of paths to return per start node.",
-    )
+    start_nodes: List[str] = Field(..., min_length=1, description="Entry nodes where traversal begins.")
+    end_nodes: List[str] = Field(..., min_length=1, description="Target nodes that stop traversal when reached.")
+    edge_types: Optional[List[str]] = Field(default=list(DEFAULT_EDGE_TYPES), description="Allowed edge types.")
+    max_depth: int = Field(default=8, ge=1, le=20, description="Maximum hops in a path.")
+    max_paths: int = Field(default=25, ge=1, le=200, description="Maximum paths per start node.")
 
-    @validator("start_nodes", "end_nodes")
+    @field_validator("start_nodes", "end_nodes")
+    @classmethod
     def _strip_nodes(cls, value: Sequence[str]) -> List[str]:
         cleaned = [str(node).strip() for node in value if str(node).strip()]
         if not cleaned:
@@ -79,13 +51,7 @@ def _search_paths(
     collected: List[Dict[str, Any]] = []
 
     if start in targets:
-        collected.append(
-            {
-                "length": 0,
-                "nodes": [snapshot(start)],
-                "edge_types": [],
-            }
-        )
+        collected.append({"length": 0, "nodes": [snapshot(start)], "edge_types": []})
         if len(collected) >= max_paths:
             return collected
 
@@ -94,21 +60,18 @@ def _search_paths(
         if len(edge_types_used) >= max_depth:
             continue
 
-        hops = _neighbor_hops(graph, current, edge_filter)
-        for hop in hops:
+        for hop in iter_neighbors_by_type(graph, current, edge_types=edge_filter):
             if hop.neighbor in path_nodes:
                 continue
             next_nodes = path_nodes + [hop.neighbor]
             next_edges = edge_types_used + [hop.edge_type]
 
             if hop.neighbor in targets:
-                collected.append(
-                    {
-                        "length": len(next_edges),
-                        "nodes": [snapshot(node) for node in next_nodes],
-                        "edge_types": list(next_edges),
-                    }
-                )
+                collected.append({
+                    "length": len(next_edges),
+                    "nodes": [snapshot(node) for node in next_nodes],
+                    "edge_types": list(next_edges),
+                })
                 if len(collected) >= max_paths:
                     return collected
 
@@ -118,59 +81,44 @@ def _search_paths(
     return collected
 
 
-def _neighbor_hops(
-    graph,
-    node_id: str,
-    edge_filter: Sequence[str],
-) -> Iterable[EdgeHop]:
-    return iter_neighbors_by_type(
-        graph,
-        node_id,
-        edge_types=edge_filter,
-    )
-
-
-@tool(args_schema=FindPathsInput)
-def find_paths(
+def _find_paths_impl(
     start_nodes: List[str],
     end_nodes: List[str],
+    workspace_id: str,
+    database_url: str | None,
     edge_types: Optional[List[str]] = None,
     max_depth: int = 8,
     max_paths: int = 25,
 ) -> List[Dict[str, Any]]:
-    """Return simple paths between the provided start and end node sets.
-
-    Traversal respects the requested edge types and stops once the
-    depth or path limits are hit.
-    """
-    graph = load_graph_cached(None)
-    edge_filter = tuple({edge_type.upper() for edge_type in (edge_types or list(DEFAULT_EDGE_TYPES)) if edge_type})
+    graph = get_graph(workspace_id, database_url)
+    edge_filter = tuple({et.upper() for et in (edge_types or list(DEFAULT_EDGE_TYPES)) if et})
     targets = {node for node in end_nodes if node in graph}
 
     results: List[Dict[str, Any]] = []
     for start in start_nodes:
         if start not in graph:
-            results.append(
-                {
-                    "start": start,
-                    "error": "Node does not exist in the call graph.",
-                    "paths": [],
-                }
-            )
+            results.append({"start": start, "error": "Node does not exist.", "paths": []})
             continue
-        paths = _search_paths(
-            graph,
-            start=start,
-            targets=targets,
-            edge_filter=edge_filter,
-            max_depth=max_depth,
-            max_paths=max_paths,
-        )
+        paths = _search_paths(graph, start=start, targets=targets, edge_filter=edge_filter, max_depth=max_depth, max_paths=max_paths)
         results.append({"start": start, "paths": paths})
     return results
 
 
-__all__ = [
-    "FindPathsInput",
-    "find_paths",
-]
+def build_find_paths_tool(workspace_id: str, database_url: str | None = None) -> BaseTool:
+    """Create a find_paths tool bound to a specific workspace."""
+
+    @tool(args_schema=FindPathsInput)
+    def find_paths(
+        start_nodes: List[str],
+        end_nodes: List[str],
+        edge_types: Optional[List[str]] = None,
+        max_depth: int = 8,
+        max_paths: int = 25,
+    ) -> List[Dict[str, Any]]:
+        """Return simple paths between start and end node sets."""
+        return _find_paths_impl(start_nodes, end_nodes, workspace_id, database_url, edge_types, max_depth, max_paths)
+
+    return find_paths
+
+
+__all__ = ["FindPathsInput", "build_find_paths_tool"]
