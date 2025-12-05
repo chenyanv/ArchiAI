@@ -25,6 +25,7 @@ def _ensure_session(
 def get_profile_calls(
     profile_id: str,
     *,
+    workspace_id: str,
     session: Session | None = None,
     database_url: str | None = None,
 ) -> List[str]:
@@ -32,7 +33,11 @@ def get_profile_calls(
 
     active_session, managed = _ensure_session(session, database_url)
     try:
-        record = active_session.get(ProfileRecord, profile_id)
+        stmt = select(ProfileRecord).where(
+            ProfileRecord.workspace_id == workspace_id,
+            ProfileRecord.id == profile_id,
+        )
+        record = active_session.execute(stmt).scalar_one_or_none()
         if record is None:
             return []
         calls: Sequence[str] = record.calls or []
@@ -45,6 +50,7 @@ def get_profile_calls(
 def get_profiles_metadata(
     profile_ids: Iterable[str],
     *,
+    workspace_id: str,
     session: Session | None = None,
     database_url: str | None = None,
 ) -> Dict[str, Dict[str, Optional[str]]]:
@@ -56,7 +62,10 @@ def get_profiles_metadata(
 
     active_session, managed = _ensure_session(session, database_url)
     try:
-        stmt = select(ProfileRecord).where(ProfileRecord.id.in_(ids))
+        stmt = select(ProfileRecord).where(
+            ProfileRecord.workspace_id == workspace_id,
+            ProfileRecord.id.in_(ids),
+        )
         records = active_session.scalars(stmt).all()
         metadata: Dict[str, Dict[str, Optional[str]]] = {}
         for record in records:
@@ -81,6 +90,7 @@ def get_profiles_metadata(
 def get_full_profiles(
     profile_ids: Iterable[str],
     *,
+    workspace_id: str,
     session: Session | None = None,
     database_url: str | None = None,
 ) -> Dict[str, Dict[str, object]]:
@@ -92,7 +102,10 @@ def get_full_profiles(
 
     active_session, managed = _ensure_session(session, database_url)
     try:
-        stmt = select(ProfileRecord).where(ProfileRecord.id.in_(ids))
+        stmt = select(ProfileRecord).where(
+            ProfileRecord.workspace_id == workspace_id,
+            ProfileRecord.id.in_(ids),
+        )
         records = active_session.scalars(stmt).all()
         payloads: Dict[str, Dict[str, object]] = {}
         for record in records:
@@ -122,6 +135,7 @@ def save_workflow(
     entry_point_id: str,
     workflow_payload: Dict[str, object],
     *,
+    workspace_id: str,
     session: Session | None = None,
     database_url: str | None = None,
 ) -> WorkflowRecord:
@@ -135,11 +149,15 @@ def save_workflow(
 
         record = (
             active_session.query(WorkflowRecord)
-            .filter(WorkflowRecord.entry_point_id == entry_point_id)
+            .filter(
+                WorkflowRecord.workspace_id == workspace_id,
+                WorkflowRecord.entry_point_id == entry_point_id,
+            )
             .first()
         )
         if record is None:
             record = WorkflowRecord(
+                workspace_id=workspace_id,
                 entry_point_id=entry_point_id,
                 workflow_name=workflow_name,
                 workflow=workflow_payload,

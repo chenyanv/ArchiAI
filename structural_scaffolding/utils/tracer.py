@@ -19,6 +19,7 @@ _FILTER_NAME_PATTERNS = tuple(re.compile(pattern) for pattern in FILTER_OUT_NAME
 def trace_workflow(
     start_profile_id: str,
     *,
+    workspace_id: str,
     max_depth: int = DEFAULT_MAX_DEPTH,
     session: Session | None = None,
     database_url: str | None = None,
@@ -37,6 +38,7 @@ def trace_workflow(
 
         _dfs_trace(
             start_profile_id,
+            workspace_id=workspace_id,
             depth=0,
             max_depth=max_depth,
             visited=visited,
@@ -44,7 +46,7 @@ def trace_workflow(
             session=active_session,
         )
 
-        clean_chain = _filter_chain(raw_chain, session=active_session)
+        clean_chain = _filter_chain(raw_chain, workspace_id=workspace_id, session=active_session)
 
         if raw_chain and raw_chain[0] not in clean_chain:
             clean_chain.insert(0, raw_chain[0])
@@ -58,6 +60,7 @@ def trace_workflow(
 def _dfs_trace(
     current_id: str,
     *,
+    workspace_id: str,
     depth: int,
     max_depth: int,
     visited: Set[str],
@@ -72,11 +75,12 @@ def _dfs_trace(
     visited.add(current_id)
     chain.append(current_id)
 
-    calls = db_utils.get_profile_calls(current_id, session=session)
+    calls = db_utils.get_profile_calls(current_id, workspace_id=workspace_id, session=session)
     for called_id in calls:
         if called_id:
             _dfs_trace(
                 called_id,
+                workspace_id=workspace_id,
                 depth=depth + 1,
                 max_depth=max_depth,
                 visited=visited,
@@ -85,14 +89,14 @@ def _dfs_trace(
             )
 
 
-def _filter_chain(raw_chain: Iterable[str], *, session: Session) -> List[str]:
+def _filter_chain(raw_chain: Iterable[str], *, workspace_id: str, session: Session) -> List[str]:
     """Apply metadata-driven filters to reduce workflow noise."""
 
     raw_list = [profile_id for profile_id in raw_chain if profile_id]
     if not raw_list:
         return []
 
-    metadata = db_utils.get_profiles_metadata(raw_list, session=session)
+    metadata = db_utils.get_profiles_metadata(raw_list, workspace_id=workspace_id, session=session)
     clean_chain: List[str] = []
 
     for profile_id in raw_list:

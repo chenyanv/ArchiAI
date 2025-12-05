@@ -45,13 +45,13 @@ Rules:
 """
 
 
-def synthesize_workflow(entry_point_id: str, *, database_url: str | None = None) -> Optional[Dict]:
+def synthesize_workflow(entry_point_id: str, *, workspace_id: str, database_url: str | None = None) -> Optional[Dict]:
     """Generate and persist a workflow description for the provided entry point."""
 
     session = create_session(database_url)
     try:
-        call_chain = trace_workflow(entry_point_id, session=session)
-        context = _build_llm_context(entry_point_id, call_chain, session=session)
+        call_chain = trace_workflow(entry_point_id, workspace_id=workspace_id, session=session)
+        context = _build_llm_context(entry_point_id, call_chain, workspace_id=workspace_id, session=session)
         prompt = PROMPT_TEMPLATE.format(context=context)
 
         try:
@@ -89,7 +89,7 @@ def synthesize_workflow(entry_point_id: str, *, database_url: str | None = None)
             logger.warning("Invalid workflow structure received", extra={"entry_point_id": entry_point_id})
             return None
 
-        db_utils.save_workflow(entry_point_id, workflow_data, session=session)
+        db_utils.save_workflow(entry_point_id, workflow_data, workspace_id=workspace_id, session=session)
         return workflow_data
     except LLMRetryableError:
         session.rollback()
@@ -105,10 +105,10 @@ def synthesize_workflow(entry_point_id: str, *, database_url: str | None = None)
 
 
 
-def _build_llm_context(entry_point_id: str, call_chain: List[str], *, session) -> str:
+def _build_llm_context(entry_point_id: str, call_chain: List[str], *, workspace_id: str, session) -> str:
     context_parts: List[str] = []
     all_profile_ids = _unique_sequence([entry_point_id, *call_chain])
-    profiles_data = db_utils.get_full_profiles(all_profile_ids, session=session)
+    profiles_data = db_utils.get_full_profiles(all_profile_ids, workspace_id=workspace_id, session=session)
 
     entry_profile = profiles_data.get(entry_point_id)
     if entry_profile:
