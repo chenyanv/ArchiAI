@@ -6,25 +6,22 @@ import json
 from typing import Any, Callable, Dict, Optional
 
 from component_agent import NavigationNode
-from component_agent.toolkit import DEFAULT_SUBAGENT_TOOLS
-from tools import get_node_details, get_source_code
+from component_agent.toolkit import build_workspace_tools
+from tools import build_get_node_details_tool, build_get_source_code_tool
 
 
-TOOL_REGISTRY = {tool.name: tool for tool in DEFAULT_SUBAGENT_TOOLS}
-
-
-def _ensure_database_arg(payload: Dict[str, Any], database_url: Optional[str]) -> Dict[str, Any]:
-    if database_url and "database_url" not in payload:
-        return {**payload, "database_url": database_url}
-    return payload
-
-
-def handle_inspect_source(target_id: Optional[str], database_url: Optional[str], **_: Any) -> None:
+def handle_inspect_source(
+    target_id: Optional[str],
+    workspace_id: str,
+    database_url: Optional[str],
+    **_: Any,
+) -> None:
     if not target_id:
         print("No node_id provided for inspect_source.")
         return
+    tool = build_get_source_code_tool(workspace_id, database_url)
     try:
-        result = get_source_code.invoke(_ensure_database_arg({"node_id": target_id}, database_url))
+        result = tool.invoke({"node_id": target_id})
     except Exception as exc:
         print(f"[ERROR] {exc}")
         return
@@ -34,12 +31,18 @@ def handle_inspect_source(target_id: Optional[str], database_url: Optional[str],
     print("=== END SOURCE ===")
 
 
-def handle_inspect_node(target_id: Optional[str], database_url: Optional[str], **_: Any) -> None:
+def handle_inspect_node(
+    target_id: Optional[str],
+    workspace_id: str,
+    database_url: Optional[str],
+    **_: Any,
+) -> None:
     if not target_id:
         print("No node_id provided for inspect_node.")
         return
+    tool = build_get_node_details_tool(workspace_id, database_url)
     try:
-        result = get_node_details.invoke(_ensure_database_arg({"node_id": target_id}, database_url))
+        result = tool.invoke({"node_id": target_id})
     except Exception as exc:
         print(f"[ERROR] {exc}")
         return
@@ -47,18 +50,27 @@ def handle_inspect_node(target_id: Optional[str], database_url: Optional[str], *
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
 
-def handle_inspect_tool(parameters: Dict[str, Any], database_url: Optional[str], **_: Any) -> None:
+def handle_inspect_tool(
+    parameters: Dict[str, Any],
+    workspace_id: str,
+    database_url: Optional[str],
+    **_: Any,
+) -> None:
     tool_name = parameters.get("tool_name")
-    if not tool_name or tool_name not in TOOL_REGISTRY:
+    if not tool_name:
+        print("No tool_name provided.")
+        return
+
+    # Build tools for this workspace and find the requested tool
+    tools = build_workspace_tools(workspace_id, database_url)
+    tool_registry = {tool.name: tool for tool in tools}
+
+    if tool_name not in tool_registry:
         print(f"Tool '{tool_name}' not found.")
         return
 
-    tool = TOOL_REGISTRY[tool_name]
+    tool = tool_registry[tool_name]
     tool_args = dict(parameters.get("tool_args") or {})
-
-    schema = getattr(tool, "args_schema", None)
-    if database_url and schema and "database_url" in getattr(schema, "model_fields", {}):
-        tool_args.setdefault("database_url", database_url)
 
     try:
         result = tool.invoke(tool_args)
@@ -75,22 +87,19 @@ def handle_graph_overlay(parameters: Dict[str, Any], **_: Any) -> None:
     print("(Render in frontend graph viewer.)")
 
 
-ACTION_HANDLERS: Dict[str, Callable[..., None]] = {
-    "inspect_source": handle_inspect_source,
-    "inspect_node": handle_inspect_node,
-    "inspect_tool": lambda target_id, database_url, parameters, **_: handle_inspect_tool(parameters, database_url),
-    "graph_overlay": lambda target_id, database_url, parameters, **_: handle_graph_overlay(parameters),
-}
-
-
-def execute_action(node: NavigationNode, database_url: Optional[str]) -> None:
+def execute_action(node: NavigationNode, workspace_id: str, database_url: Optional[str]) -> None:
     """Execute the action associated with a navigation node."""
-    handler = ACTION_HANDLERS.get(node.action.kind)
-    if handler:
-        handler(
-            target_id=node.action.target_id,
-            database_url=database_url,
-            parameters=node.action.parameters,
-        )
+    kind = node.action.kind
+    target_id = node.action.target_id
+    parameters = node.action.parameters
+
+    if kind == "inspect_source":
+        handle_inspect_source(target_id, workspace_id, database_url)
+    elif kind == "inspect_node":
+        handle_inspect_node(target_id, workspace_id, database_url)
+    elif kind == "inspect_tool":
+        handle_inspect_tool(parameters, workspace_id, database_url)
+    elif kind == "graph_overlay":
+        handle_graph_overlay(parameters)
     else:
-        print(f"Unknown action: '{node.action.kind}'")
+        print(f"Unknown action: '{kind}'")

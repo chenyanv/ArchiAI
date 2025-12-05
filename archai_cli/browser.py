@@ -223,6 +223,7 @@ class CachedLayer:
 
 def browse_component(
     card: Dict[str, Any],
+    workspace_id: str,
     database_url: Optional[str],
     *,
     debug_agent: bool,
@@ -252,6 +253,7 @@ def browse_component(
                     component_card=card,
                     breadcrumbs=breadcrumbs,
                     subagent_payload=coerce_subagent_payload(card),
+                    workspace_id=workspace_id,
                     database_url=database_url,
                 ),
                 debug=debug_agent,
@@ -305,4 +307,4 @@ def browse_component(
                 ))
                 print(f"Deepening into {node.title}...")
                 break
-            execute_action(node, database_url)
+            execute_action(node, workspace_id, database_url)

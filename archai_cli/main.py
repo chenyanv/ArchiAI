@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from orchestration_agent.graph import run_orchestration_agent
 
@@ -18,7 +17,12 @@ from .browser import (
 )
 
 
-def _load_or_run_orchestration(plan_path: Path, no_cache: bool) -> Dict[str, Any]:
+def _load_or_run_orchestration(
+    plan_path: Path,
+    workspace_id: str,
+    database_url: Optional[str],
+    no_cache: bool,
+) -> Dict[str, Any]:
     """Load cached plan or run orchestration agent."""
     plan = load_plan(plan_path)
     if plan and plan.get("component_cards") and not no_cache:
@@ -26,7 +30,7 @@ def _load_or_run_orchestration(plan_path: Path, no_cache: bool) -> Dict[str, Any
         return plan
 
     print("Running orchestration agent..." if not plan else "Re-running orchestration...")
-    plan = run_orchestration_agent()
+    plan = run_orchestration_agent(workspace_id, database_url)
     write_plan(plan, plan_path)
     print(f"✓ Generated plan with {len(plan.get('component_cards', []))} components")
     return plan
@@ -34,7 +38,8 @@ def _load_or_run_orchestration(plan_path: Path, no_cache: bool) -> Dict[str, Any
 
 def _browse_with_plan(
     plan: Dict[str, Any],
-    database_url: str | None,
+    workspace_id: str,
+    database_url: Optional[str],
     args: CommonArgs,
     log_tools: bool = True,
     show_tokens: bool = True,
@@ -48,6 +53,7 @@ def _browse_with_plan(
 
     browse_component(
         card,
+        workspace_id,
         database_url,
         debug_agent=args.debug_agent,
         log_llm=args.log_llm,
@@ -69,7 +75,7 @@ def run_analyze(args: AnalyzeArgs) -> None:
         print(f"❌ Error: {e}")
         return
 
-    print(f"   → Workspace: {workspace.root}")
+    print(f"   → Workspace: {workspace.workspace_id}")
 
     if not workspace.is_indexed or args.force_download:
         print("\n🔍 Building structural index...")
@@ -82,18 +88,15 @@ def run_analyze(args: AnalyzeArgs) -> None:
     else:
         print("\n✓ Using cached index")
 
-    os.environ["STRUCTURAL_SCAFFOLD_DB_URL"] = workspace.database_url
-    os.environ["ARCHAI_GRAPH_PATH"] = str(workspace.call_graph_path)
-
     print("\n🤖 Running orchestration agent...")
-    plan = _load_or_run_orchestration(workspace.plan_path, args.no_cache)
-    _browse_with_plan(plan, workspace.database_url, args)
+    plan = _load_or_run_orchestration(workspace.plan_path, workspace.workspace_id, workspace.database_url, args.no_cache)
+    _browse_with_plan(plan, workspace.workspace_id, workspace.database_url, args)
 
 
 def run_browse(args: BrowseArgs) -> None:
     """Browse an existing orchestration plan."""
-    plan = _load_or_run_orchestration(args.plan_path, args.no_cache)
-    _browse_with_plan(plan, args.database_url, args, log_tools=args.log_tools, show_tokens=args.show_tokens)
+    plan = _load_or_run_orchestration(args.plan_path, args.workspace_id, args.database_url, args.no_cache)
+    _browse_with_plan(plan, args.workspace_id, args.database_url, args, log_tools=args.log_tools, show_tokens=args.show_tokens)
 
 
 def main() -> None:

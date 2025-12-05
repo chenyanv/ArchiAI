@@ -28,6 +28,7 @@ class AnalyzeArgs(CommonArgs):
 @dataclass
 class BrowseArgs(CommonArgs):
     """Arguments for the 'browse' subcommand."""
+    workspace_id: str = ""
     plan_path: Path = field(default_factory=lambda: Path("results/orchestration_plan.json"))
     database_url: Optional[str] = None
     log_tools: bool = False
@@ -57,6 +58,7 @@ def parse_args() -> AnalyzeArgs | BrowseArgs:
 
     # browse subcommand
     browse_parser = subparsers.add_parser("browse", help="Browse an existing orchestration plan")
+    browse_parser.add_argument("workspace_id", help="Workspace identifier (e.g., owner-repo)")
     browse_parser.add_argument("--plan-path", default="results/orchestration_plan.json")
     browse_parser.add_argument("--database-url", default=None)
     browse_parser.add_argument("--log-tools", action="store_true", help="Print tool invocations.")
@@ -81,6 +83,7 @@ def parse_args() -> AnalyzeArgs | BrowseArgs:
             force_download=args.force_download,
         )
     return BrowseArgs(
+        workspace_id=args.workspace_id,
         plan_path=Path(args.plan_path).expanduser().resolve(),
         database_url=args.database_url,
         component_id=args.component_id,
