@@ -15,7 +15,8 @@ from typing_extensions import Annotated, TypedDict
 from .llm import build_component_chat_model
 from .prompt import build_component_system_prompt, format_component_request
 from .schemas import ComponentDrilldownRequest, ComponentDrilldownResponse
-from .toolkit import DEFAULT_SUBAGENT_TOOLS, summarise_tools
+from .token_tracker import TokenTracker
+from .toolkit import DEFAULT_SUBAGENT_TOOLS
 
 
 LogFn = Callable[[str], None]
@@ -206,6 +207,7 @@ def run_component_agent(
     logger: Optional[LogFn] = None,
     log_tool_usage: Optional[ToolLogFn] = None,
     log_llm_input: Optional[LLMContextLogger] = None,
+    token_tracker: Optional[TokenTracker] = None,
 ) -> ComponentDrilldownResponse:
     """Execute the sub-agent and return a structured drilldown response."""
 
@@ -219,27 +221,39 @@ def run_component_agent(
         llm_context_logger=log_llm_input,
     )
     system_message = SystemMessage(content=build_component_system_prompt())
-    tool_catalog = summarise_tools(toolset)
     human_message = HumanMessage(
-        content=format_component_request(request, tool_catalog=tool_catalog)
+        content=format_component_request(request)
     )
 
     # Run the ReAct loop to gather tool information
     messages: List[BaseMessage] = [system_message, human_message]
     final_state = graph.invoke({"messages": messages})
 
+    # Track tokens from ReAct loop messages
+    if token_tracker:
+        token_tracker.track_messages(final_state["messages"])
+
     # Use structured output to generate the final response
     # This leverages Gemini's native JSON schema enforcement
+    # include_raw=True returns both the raw AIMessage (for token tracking) and parsed object
     model = build_component_chat_model(temperature=temperature)
     structured_model = model.with_structured_output(
         ComponentDrilldownResponse,
         method="json_schema",
+        include_raw=True,
     )
 
     if debug and logger:
         logger("[structured_output] Generating ComponentDrilldownResponse from conversation")
 
-    response: ComponentDrilldownResponse = structured_model.invoke(final_state["messages"])
+    result = structured_model.invoke(final_state["messages"])
+
+    # include_raw=True returns a dict with 'raw' (AIMessage) and 'parsed' (Pydantic object)
+    raw_message = result.get("raw")
+    response: ComponentDrilldownResponse = result.get("parsed")
+
+    if token_tracker and raw_message:
+        token_tracker.track_messages([raw_message])
 
     # Fill in missing fields if needed
     if not response.component_id:

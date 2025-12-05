@@ -15,6 +15,7 @@ from component_agent import (
     coerce_subagent_payload,
     run_component_agent,
 )
+from component_agent.token_tracker import TokenTracker
 from component_agent.toolkit import DEFAULT_SUBAGENT_TOOLS
 from orchestration_agent.graph import run_orchestration_agent
 from tools import get_node_details, get_source_code
@@ -32,6 +33,7 @@ class CLIArgs:
     log_llm: bool
     log_tools: bool
     no_cache: bool
+    show_tokens: bool
 
 
 def _parse_args() -> CLIArgs:
@@ -86,6 +88,7 @@ def _parse_args() -> CLIArgs:
         log_llm=args.log_llm,
         log_tools=args.log_tools,
         no_cache=args.no_cache,
+        show_tokens=True,
     )
 
 
@@ -422,9 +425,11 @@ def _browse_component(
     log_llm: bool,
     log_tools: bool,
     no_cache: bool = False,
+    show_tokens: bool = False,
 ) -> None:
     breadcrumbs: List[NavigationBreadcrumb] = []
     node_cache: Dict[str, Any] = {}  # Cache nodes by breadcrumb path
+    token_tracker = TokenTracker() if show_tokens else None
     _render_component_overview(card)
     while True:
         # Create cache key from current breadcrumb path
@@ -441,6 +446,10 @@ def _browse_component(
             is_sequential = cached_response.get("is_sequential", False)
             workflow_narrative = cached_response.get("workflow_narrative")
         else:
+            # Mark checkpoint for this request (cumulative tracking)
+            if token_tracker:
+                token_tracker.mark_checkpoint()
+
             # Cache miss - call agent
             request = ComponentDrilldownRequest(
                 component_card=card,
@@ -454,7 +463,12 @@ def _browse_component(
                 logger=_agent_logger if debug_agent else None,
                 log_tool_usage=_tool_usage_logger,  # Always show tool usage
                 log_llm_input=_llm_input_logger if log_llm else None,
+                token_tracker=token_tracker,
             )
+
+            # Print token usage if enabled
+            if token_tracker:
+                print(f"\n{token_tracker.summary()}")
             nodes = response.next_layer.nodes
             focus_label = response.next_layer.focus_label
             focus_kind = response.next_layer.focus_kind
@@ -530,6 +544,7 @@ def main() -> None:
         log_llm=args.log_llm,
         log_tools=args.log_tools,
         no_cache=args.no_cache,
+        show_tokens=args.show_tokens,
     )
 
 
