@@ -1,368 +1,221 @@
+"""LangGraph workflow powering the orchestration agent (ReAct pattern)."""
+
 from __future__ import annotations
 
 import json
 import re
-from collections import Counter, defaultdict
-from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Optional, Sequence, TypedDict
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.tools import BaseTool
 from langgraph.graph import END, StateGraph
+from langgraph.graph.message import add_messages
+from langgraph.prebuilt import ToolNode
+from typing_extensions import Annotated, TypedDict
 
-from tools import (
-    build_call_graph_pagerank_tool,
-    build_list_core_models_tool,
-    build_list_entry_point_tool,
-)
-
-from .llm import LLMResponseError, invoke_llm
-from .prompt import build_meta_prompt
-
-
-class OrchestrationState(TypedDict, total=False):
-    workspace_id: str
-    database_url: Optional[str]
-    landmarks: List[Mapping[str, Any]]
-    entry_points: List[Mapping[str, Any]]
-    core_models: List[Mapping[str, Any]]
-    entry_point_summary: str
-    core_model_summary: str
-    llm_response: str
-    plan: Dict[str, Any]
-    result: Dict[str, Any]
+from .llm import build_orchestration_chat_model
+from .prompt import build_orchestration_system_prompt, build_orchestration_user_prompt
+from .schemas import OrchestrationResponse
+from .toolkit import build_orchestration_tools
 
 
-def _normalise_json_text(payload: Mapping[str, Any] | List[Any]) -> str:
-    return json.dumps(payload, ensure_ascii=False, indent=2)
+LogFn = Callable[[str], None]
 
 
-def _normalise_landmarks(landmarks: Sequence[Mapping[str, Any]]) -> List[Mapping[str, Any]]:
-    normalised: List[Mapping[str, Any]] = []
-    for landmark in landmarks:
-        if not isinstance(landmark, MutableMapping):
-            continue
-        node_id = landmark.get("node_id") or landmark.get("id") or landmark.get("identifier")
-        enriched = dict(landmark)
-        if node_id:
-            enriched.setdefault("node_id", str(node_id))
-        normalised.append(enriched)
-    return normalised
+class AgentState(TypedDict):
+    """State for the orchestration agent ReAct loop."""
+
+    messages: Annotated[List[BaseMessage], add_messages]
 
 
-def _format_model_entry(model: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
-    name = model.get("model_name") or model.get("name") or model.get("qualified_name")
-    if not name:
-        return None
-    node_id = model.get("node_id") or model.get("call_graph_id") or model.get("id")
-    payload: Dict[str, Any] = {"model": str(name)}
-    if node_id:
-        payload["node_id"] = str(node_id)
-    return payload
+def _coerce_text(content: Any) -> str:
+    """Extract text from various content formats."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, Sequence) and not isinstance(content, (str, bytes)):
+        fragments = []
+        for chunk in content:
+            if isinstance(chunk, str):
+                fragments.append(chunk)
+            elif isinstance(chunk, dict) and (text := chunk.get("text")):
+                fragments.append(str(text))
+        return "\n".join(fragments)
+    return str(content)
 
 
-def _core_model_snapshot(core_models: Sequence[Mapping[str, Any]]) -> str:
-    formatted: List[Dict[str, Any]] = []
-    seen: set[tuple[str, Optional[str]]] = set()
-    for model in core_models:
-        entry = _format_model_entry(model)
-        if not entry:
-            continue
-        key = (entry["model"], entry.get("node_id"))
-        if key in seen:
-            continue
-        seen.add(key)
-        formatted.append(entry)
-
-    top_models = formatted[:7]
-    supporting = formatted[7:12]
-    payload: Dict[str, Any] = {"top_models": top_models, "model_relationships": []}
-    if supporting:
-        payload["supporting_models"] = supporting
-    payload["notes"] = ["Condensed list of unique model identifiers derived directly from graph data."]
-    return _normalise_json_text(payload)
-
-
-def _normalise_methods(methods: Iterable[Any]) -> List[str]:
-    unique = {str(method).upper() for method in methods if method}
-    return sorted(unique)
-
-
-def _route_prefix(route: str) -> str:
-    trimmed = route.strip()
-    if not trimmed:
-        return "/"
-    stripped = trimmed.lstrip("/")
-    if not stripped:
-        return "/"
-    segments = [segment for segment in stripped.split("/") if segment]
-    if not segments:
-        return "/"
-    for segment in segments:
-        if segment.startswith("<") and segment.endswith(">"):
-            continue
-        return f"/{segment}"
-    return f"/{segments[0]}"
-
-
-def _prefix_purpose(prefix: str) -> str:
-    if prefix in {"", "/"}:
-        return "Core root-level routes."
-    token = prefix.strip("/").replace("_", " ").replace("-", " ").strip()
-    if not token:
-        return "Core root-level routes."
-    return f"Routes handling {token} operations."
-
-
-def _summarise_entry_points(entry_points: Sequence[Mapping[str, Any]]) -> str:
-    if not entry_points:
-        return _normalise_json_text({
-            "framework_totals": {},
-            "route_groups": [],
-            "noteworthy_routes": [],
-            "notes": ["No HTTP entry points were detected."],
-        })
-
-    framework_counter: Counter[str] = Counter()
-    route_aggregates: Dict[str, Dict[str, Any]] = {}
-
-    for entry in entry_points:
-        framework = entry.get("framework")
-        if framework:
-            framework_counter[str(framework)] += 1
-
-        route_value = entry.get("route") or entry.get("path") or ""
-        route = str(route_value).strip() or "/"
-        aggregate = route_aggregates.setdefault(route, {"methods": set(), "handlers": set(), "file_paths": set(), "node_ids": set()})
-
-        methods = entry.get("http_methods") or entry.get("methods") or []
-        aggregate["methods"].update(_normalise_methods(methods))
-
-        handler = entry.get("qualified_name") or entry.get("symbol")
-        if handler:
-            aggregate["handlers"].add(str(handler))
-
-        file_path = entry.get("file_path")
-        if file_path:
-            aggregate["file_paths"].add(str(file_path))
-
-        node_id = entry.get("call_graph_id") or entry.get("node_id") or entry.get("id")
-        if node_id:
-            aggregate["node_ids"].add(str(node_id))
-
-    grouped_routes: Dict[str, List[tuple[str, Dict[str, Any]]]] = defaultdict(list)
-    for route, aggregate in route_aggregates.items():
-        prefix = _route_prefix(route)
-        grouped_routes[prefix].append((route, aggregate))
-
-    def _sort_routes(items: List[tuple[str, Dict[str, Any]]]) -> List[tuple[str, Dict[str, Any]]]:
-        return sorted(items, key=lambda item: (-len(item[1]["methods"]), item[0]))
-
-    sorted_groups = sorted(grouped_routes.items(), key=lambda item: (-len(item[1]), item[0]))
-
-    route_groups: List[Dict[str, Any]] = []
-    used_routes: set[str] = set()
-    for prefix, routes in sorted_groups[:6]:
-        sorted_routes = _sort_routes(routes)
-        payload_routes: List[Dict[str, Any]] = []
-        for route, aggregate in sorted_routes[:6]:
-            methods = sorted(aggregate["methods"])
-            handlers = sorted(aggregate["handlers"])
-            file_paths = sorted(aggregate["file_paths"])
-            payload_routes.append({
-                "path": route,
-                "methods": methods,
-                "handler": " | ".join(handlers),
-                "file_path": file_paths[0] if file_paths else "",
-                "node_ids": sorted(aggregate["node_ids"]),
-            })
-            used_routes.add(route)
-        route_groups.append({"prefix": prefix, "purpose": _prefix_purpose(prefix), "routes": payload_routes})
-
-    noteworthy_candidates = [(route, aggregate) for route, aggregate in route_aggregates.items() if route not in used_routes]
-    noteworthy_sorted = sorted(noteworthy_candidates, key=lambda item: (-len(item[1]["methods"]), item[0]))
-
-    noteworthy_routes: List[Dict[str, Any]] = []
-    for route, aggregate in noteworthy_sorted[:8]:
-        methods = sorted(aggregate["methods"])
-        handlers = sorted(aggregate["handlers"])
-        file_paths = sorted(aggregate["file_paths"])
-        noteworthy_routes.append({
-            "path": route,
-            "methods": methods,
-            "handler": " | ".join(handlers),
-            "file_path": file_paths[0] if file_paths else "",
-            "node_ids": sorted(aggregate["node_ids"]),
-        })
-
-    return _normalise_json_text({
-        "framework_totals": dict(framework_counter),
-        "route_groups": route_groups,
-        "noteworthy_routes": noteworthy_routes,
-        "notes": ["Grouped by leading route segment to reduce noise."],
-    })
-
-
-def _summarise_core_models(core_models: Sequence[Mapping[str, Any]]) -> str:
-    if not core_models:
-        return _normalise_json_text({
-            "top_models": [],
-            "model_relationships": [],
-            "supporting_models": [],
-            "notes": ["No database models were detected."],
-        })
-    return _core_model_snapshot(core_models)
-
-
-def _gather_intelligence(state: OrchestrationState) -> OrchestrationState:
-    """Fetch the raw intelligence reports by invoking the three strategic tools."""
-    workspace_id = state.get("workspace_id", "")
-    database_url = state.get("database_url")
-
-    pagerank_tool = build_call_graph_pagerank_tool(workspace_id, database_url)
-    entry_point_tool = build_list_entry_point_tool(workspace_id, database_url)
-    core_models_tool = build_list_core_models_tool(workspace_id, database_url)
-
-    landmarks = pagerank_tool.invoke({"limit": 20})
-    entry_points = entry_point_tool.invoke({"limit": 40})
-    core_models = core_models_tool.invoke({"limit": 50})
-
-    return {"landmarks": landmarks or [], "entry_points": entry_points or [], "core_models": core_models or []}
-
-
-def _preprocess_intelligence(state: OrchestrationState) -> OrchestrationState:
-    """Compress bulky intelligence before the main reasoning step."""
-    entry_points: Sequence[Mapping[str, Any]] = state.get("entry_points", []) or []
-    core_models: Sequence[Mapping[str, Any]] = state.get("core_models", []) or []
-    return {"entry_point_summary": _summarise_entry_points(entry_points), "core_model_summary": _summarise_core_models(core_models)}
-
-
-def _fuse_intelligence(state: OrchestrationState) -> OrchestrationState:
-    """Feed the gathered intelligence to ChatGPT for high-level synthesis."""
-    entry_points: Sequence[Mapping[str, Any]] = state.get("entry_points", []) or []
-    core_models: Sequence[Mapping[str, Any]] = state.get("core_models", []) or []
-    landmarks_raw: Sequence[Mapping[str, Any]] = state.get("landmarks", []) or []
-    landmarks = _normalise_landmarks(landmarks_raw)
-    entry_summary = state.get("entry_point_summary")
-    if not isinstance(entry_summary, str) or not entry_summary.strip():
-        entry_summary = _summarise_entry_points(entry_points)
-    core_summary = state.get("core_model_summary")
-    if not isinstance(core_summary, str) or not core_summary.strip():
-        core_summary = _summarise_core_models(core_models)
-
-    prompt = build_meta_prompt(landmarks, entry_summary, len(entry_points), core_summary, len(core_models))
-    print("=== ORCHESTRATION PROMPT BEGIN ===")
-    print(prompt)
-    print("=== ORCHESTRATION PROMPT END ===")
+def _safe_json(value: Any) -> str:
+    """Safely serialize a value to JSON."""
     try:
-        raw_response = invoke_llm(prompt, temperature=0.2, top_p=0.9, max_output_tokens=12000)
-    except LLMResponseError as exc:
-        fallback = _fallback_plan(state, exc)
-        return {"llm_response": str(exc), "plan": fallback}
-
-    plan = _parse_plan(raw_response)
-    next_state: OrchestrationState = {"llm_response": raw_response}
-    if plan is not None:
-        next_state["plan"] = plan
-    return next_state
+        return json.dumps(value, ensure_ascii=False)
+    except TypeError:
+        return repr(value)
 
 
-def _finalise(state: OrchestrationState) -> OrchestrationState:
-    """Prepare the final payload for downstream consumers."""
-    plan = state.get("plan")
-    if plan is None:
-        plan = {
-            "system_overview": {"headline": "", "key_workflows": []},
-            "component_cards": [],
-            "deprioritised_signals": [],
-            "raw_response": state.get("llm_response"),
-        }
-    return {"result": plan}
+def _truncate(text: str, limit: int = 600) -> str:
+    """Truncate a string to a maximum length."""
+    return text if len(text) <= limit else text[:limit] + "…"
 
 
-def _parse_plan(response_text: str) -> Optional[Dict[str, Any]]:
-    for candidate in _iter_json_candidates(response_text):
+def _parse_json_from_response(response_text: str) -> Optional[Dict[str, Any]]:
+    """Extract JSON from the LLM response."""
+    stripped = response_text.strip()
+
+    # Try direct parse
+    try:
+        if isinstance(parsed := json.loads(stripped), dict):
+            return parsed
+    except json.JSONDecodeError:
+        pass
+
+    # Try extracting from code fence
+    if fence_match := re.search(r"```(?:json)?\s*(.*?)\s*```", stripped, flags=re.S):
         try:
-            parsed = json.loads(candidate)
+            if isinstance(parsed := json.loads(fence_match.group(1).strip()), dict):
+                return parsed
         except json.JSONDecodeError:
-            continue
-        if isinstance(parsed, MutableMapping):
-            return dict(parsed)
+            pass
+
+    # Try extracting any JSON object
+    if brace_match := re.search(r"\{.*\}", stripped, flags=re.S):
+        try:
+            if isinstance(parsed := json.loads(brace_match.group(0)), dict):
+                return parsed
+        except json.JSONDecodeError:
+            pass
+
     return None
 
 
-def _iter_json_candidates(response_text: str) -> Iterable[str]:
-    """Yield progressively cleaned candidates that might contain the JSON payload."""
-    stripped = response_text.strip()
-    if stripped:
-        yield stripped
+def _create_agent_node(model, logger: Optional[LogFn] = None, debug: bool = False):
+    """Create a node that invokes the LLM."""
 
-    if stripped.startswith("```"):
-        fence_match = re.match(r"```(?:json)?\s*(.*?)\s*```", stripped, flags=re.S)
-        if fence_match:
-            inner = fence_match.group(1).strip()
-            if inner:
-                yield inner
-        lines = stripped.splitlines()
-        if len(lines) >= 2 and lines[0].startswith("```") and lines[-1].startswith("```"):
-            inner = "\n".join(lines[1:-1]).strip()
-            if inner:
-                yield inner
+    def invoke(state: AgentState) -> AgentState:
+        if debug and logger:
+            logger(f"[llm:input] ingesting {len(state['messages'])} messages")
+        response = model.invoke(state["messages"])
+        if debug and logger:
+            preview = _coerce_text(response.content)[:500]
+            finish_reason = (getattr(response, "response_metadata", {}) or {}).get("finish_reason")
+            logger(f"[llm:output] finish_reason={finish_reason}\n{preview}...")
+        return {"messages": [response]}
 
-    brace_match = re.search(r"\{.*\}", stripped, flags=re.S)
-    if brace_match:
-        candidate = brace_match.group(0).strip()
-        if candidate:
-            yield candidate
+    return invoke
 
 
-def _fallback_plan(state: OrchestrationState, error: LLMResponseError) -> Dict[str, Any]:
-    metadata = getattr(error, "metadata", None)
-    return {
-        "system_overview": {"headline": "", "key_workflows": []},
-        "component_cards": [],
-        "deprioritised_signals": [],
-        "error": {
-            "type": error.__class__.__name__,
-            "message": str(error),
-            "metadata": metadata,
-            "landmark_count": len(state.get("landmarks", []) or []),
-            "entry_point_count": len(state.get("entry_points", []) or []),
-            "core_model_count": len(state.get("core_models", []) or []),
-        },
-    }
+def _create_tool_node(tools: Sequence[BaseTool], logger: Optional[LogFn] = None, debug: bool = False):
+    """Create a tool node with optional logging."""
+    tool_map = {tool.name: tool for tool in tools}
+    base_node = ToolNode(tools)
+
+    def invoke(state: AgentState) -> AgentState:
+        if not debug or not logger:
+            return base_node.invoke(state)
+
+        # Manual execution with logging
+        outputs: List[ToolMessage] = []
+        last = state["messages"][-1]
+        tool_calls = getattr(last, "tool_calls", None) or []
+
+        for call in tool_calls:
+            name, args = call.get("name"), call.get("args") or {}
+            if not name:
+                continue
+
+            tool = tool_map.get(name)
+            if tool is None:
+                outputs.append(ToolMessage(content=f"Error: Tool '{name}' not found", tool_call_id=call.get("id")))
+                continue
+
+            logger(f"[tool:start] {name} args={_safe_json(args)}")
+            try:
+                result = tool.invoke(args)
+            except Exception as exc:
+                result = {"error": str(exc)}
+            logger(f"[tool:end] {name} result={_truncate(_safe_json(result))}")
+
+            outputs.append(ToolMessage(content=_safe_json(result), tool_call_id=call.get("id")))
+
+        return {"messages": outputs}
+
+    return invoke
 
 
-def build_orchestration_agent() -> StateGraph:
-    """Construct the LangGraph agent responsible for orchestration planning."""
-    workflow = StateGraph(OrchestrationState)
-    workflow.add_node("gather_intelligence", _gather_intelligence)
-    workflow.add_node("preprocess_intelligence", _preprocess_intelligence)
-    workflow.add_node("intelligence_fusion", _fuse_intelligence)
-    workflow.add_node("finalise", _finalise)
+def _should_continue(state: AgentState) -> str:
+    """Determine if the agent should continue calling tools or end."""
+    last: BaseMessage = state["messages"][-1]
+    if isinstance(last, AIMessage) and getattr(last, "tool_calls", None):
+        return "tools"
+    return END
 
-    workflow.set_entry_point("gather_intelligence")
-    workflow.add_edge("gather_intelligence", "preprocess_intelligence")
-    workflow.add_edge("preprocess_intelligence", "intelligence_fusion")
-    workflow.add_edge("intelligence_fusion", "finalise")
-    workflow.add_edge("finalise", END)
 
-    return workflow.compile()
+def build_orchestration_graph(
+    tools: Sequence[BaseTool],
+    *,
+    temperature: float = 0.2,
+    logger: Optional[LogFn] = None,
+    debug: bool = False,
+):
+    """Build the orchestration agent graph with ReAct pattern."""
+    model = build_orchestration_chat_model(temperature=temperature).bind_tools(tools)
+
+    graph = StateGraph(AgentState)
+    graph.add_node("agent", _create_agent_node(model, logger, debug))
+    graph.add_node("tools", _create_tool_node(tools, logger, debug))
+    graph.add_conditional_edges("agent", _should_continue, ["tools", END])
+    graph.add_edge("tools", "agent")
+    graph.set_entry_point("agent")
+
+    return graph.compile()
 
 
 def run_orchestration_agent(
     workspace_id: str,
     database_url: str | None = None,
-    initial_state: Optional[OrchestrationState] = None,
+    *,
+    tools: Optional[Sequence[BaseTool]] = None,
+    temperature: float = 0.2,
+    debug: bool = False,
+    logger: Optional[LogFn] = None,
 ) -> Dict[str, Any]:
-    """Execute the compiled graph and return the final plan."""
-    graph = build_orchestration_agent()
-    default_state: OrchestrationState = {
-        "workspace_id": workspace_id,
-        "database_url": database_url,
-        "landmarks": [],
-        "entry_points": [],
-        "core_models": [],
+    """Execute the orchestration agent and return the architecture analysis."""
+    toolset = list(tools) if tools else build_orchestration_tools(workspace_id, database_url)
+
+    graph = build_orchestration_graph(toolset, temperature=temperature, logger=logger, debug=debug)
+
+    initial_messages = [
+        SystemMessage(content=build_orchestration_system_prompt()),
+        HumanMessage(content=build_orchestration_user_prompt(workspace_id)),
+    ]
+
+    if debug and logger:
+        logger("[orchestration] Starting ReAct loop...")
+
+    final_state = graph.invoke({"messages": initial_messages}, {"recursion_limit": 50})
+
+    if debug and logger:
+        logger(f"[orchestration] ReAct loop completed with {len(final_state['messages'])} messages")
+
+    # Parse and validate the response
+    response_text = _coerce_text(final_state["messages"][-1].content)
+    parsed = _parse_json_from_response(response_text)
+
+    if parsed:
+        try:
+            return OrchestrationResponse.model_validate(parsed).model_dump()
+        except Exception as exc:
+            if debug and logger:
+                logger(f"[orchestration] Schema validation failed: {exc}")
+            return parsed
+
+    if debug and logger:
+        logger("[orchestration] Failed to parse JSON from response")
+
+    return {
+        "system_overview": {"headline": "Analysis could not be parsed", "key_workflows": []},
+        "component_cards": [],
+        "deprioritised_signals": [],
+        "raw_response": response_text,
     }
-    state: OrchestrationState = default_state
-    if initial_state:
-        state.update(initial_state)
-    final_state = graph.invoke(state)
-    return final_state.get("result", {})
+
+
+__all__ = ["build_orchestration_graph", "run_orchestration_agent"]

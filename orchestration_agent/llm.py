@@ -75,13 +75,12 @@ def _resolve_provider() -> LLMProvider:
     return LLMProvider.GEMINI
 
 
-@lru_cache(maxsize=2)
-def _get_llm(
+def _create_chat_model(
     provider: LLMProvider,
     temperature: Optional[float] = None,
     max_output_tokens: Optional[int] = None,
 ) -> BaseChatModel:
-    """Create and cache a LangChain chat model for the given provider."""
+    """Create a LangChain chat model for the given provider."""
     api_key = _resolve_api_key(provider)
     model_name = _resolve_model(provider)
 
@@ -99,24 +98,39 @@ def _get_llm(
             temperature=temperature,
             max_output_tokens=max_output_tokens,
         )
-    else:
-        try:
-            from langchain_openai import ChatOpenAI
-        except ImportError as exc:
-            raise LLMConfigurationError(
-                "langchain-openai package is not installed"
-            ) from exc
 
-        kwargs: Dict[str, Any] = {
-            "model": model_name,
-            "api_key": api_key,
-        }
-        if temperature is not None:
-            kwargs["temperature"] = temperature
-        if max_output_tokens is not None:
-            kwargs["max_tokens"] = max_output_tokens
+    try:
+        from langchain_openai import ChatOpenAI
+    except ImportError as exc:
+        raise LLMConfigurationError(
+            "langchain-openai package is not installed"
+        ) from exc
 
-        return ChatOpenAI(**kwargs)
+    kwargs: Dict[str, Any] = {"model": model_name, "api_key": api_key}
+    if temperature is not None:
+        kwargs["temperature"] = temperature
+    if max_output_tokens is not None:
+        kwargs["max_tokens"] = max_output_tokens
+
+    return ChatOpenAI(**kwargs)
+
+
+@lru_cache(maxsize=2)
+def _get_llm(
+    provider: LLMProvider,
+    temperature: Optional[float] = None,
+    max_output_tokens: Optional[int] = None,
+) -> BaseChatModel:
+    """Create and cache a LangChain chat model."""
+    return _create_chat_model(provider, temperature, max_output_tokens)
+
+
+def build_orchestration_chat_model(
+    temperature: float = 0.2,
+    max_output_tokens: Optional[int] = None,
+) -> BaseChatModel:
+    """Build a non-cached chat model for the orchestration agent (suitable for tool binding)."""
+    return _create_chat_model(_resolve_provider(), temperature, max_output_tokens)
 
 
 def invoke_llm(
