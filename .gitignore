@@ -1,0 +1,40 @@
+# Environment files (contain secrets)
+.env
+.env.local
+backend/.env
+frontend/.env.local
+
+# Keep example files
+!.env.example
+!backend/.env.example
+!frontend/.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# Node
+node_modules/
+.next/
+
+# IDE
+.idea/
+.vscode/
+.DS_Store
+
+# Build outputs
+/build
+/dist
+/results
+/vendor
+
+# Project specific
+ragflow-main/
+scripts/
+tests_scratch/
+*.md
+!README.md

@@ -1,0 +1,161 @@
+{
+  "landmarks": [
+    {
+      "id": "python::src/services/order_service.py::OrderService::process_order",
+      "score": 0.184,
+      "label": "OrderService.process_order",
+      "kind": "function",
+      "category": "service",
+      "file_path": "src/services/order_service.py"
+    },
+    {
+      "id": "python::src/api/routes/orders.py::create_order",
+      "score": 0.161,
+      "label": "create_order",
+      "kind": "function",
+      "category": "controller",
+      "file_path": "src/api/routes/orders.py"
+    },
+    {
+      "id": "python::src/payments/processor.py::PaymentGateway::charge",
+      "score": 0.147,
+      "label": "PaymentGateway.charge",
+      "kind": "function",
+      "category": "integration",
+      "file_path": "src/payments/processor.py"
+    }
+  ],
+  "entry_points": [
+    {
+      "route": "/api/v1/orders",
+      "methods": [
+        "POST"
+      ],
+      "qualified_name": "src.api.routes.orders.create_order",
+      "file_path": "src/api/routes/orders.py",
+      "line_number": 42,
+      "framework": "fastapi",
+      "decorator": "router.post",
+      "docstring": "Create a new purchase order after validating payment."
+    },
+    {
+      "route": "/api/v1/orders/{order_id}",
+      "methods": [
+        "GET"
+      ],
+      "qualified_name": "src.api.routes.orders.read_order",
+      "file_path": "src/api/routes/orders.py",
+      "line_number": 88,
+      "framework": "fastapi",
+      "decorator": "router.get",
+      "docstring": "Retrieve the details for a single purchase order."
+    },
+    {
+      "route": "/api/v1/payments/preview",
+      "methods": [
+        "POST"
+      ],
+      "qualified_name": "src.api.routes.payments.preview_charge",
+      "file_path": "src/api/routes/payments.py",
+      "line_number": 55,
+      "framework": "fastapi",
+      "decorator": "router.post",
+      "docstring": "Estimate payment fees before charging a card."
+    }
+  ],
+  "core_models": [
+    {
+      "model_name": "Order",
+      "qualified_name": "src.db.models.order.Order",
+      "file_path": "src/db/models/order.py",
+      "start_line": 10,
+      "end_line": 64,
+      "bases": [
+        "BaseModel"
+      ],
+      "fields": [
+        {
+          "name": "id",
+          "field_type": "UUIDField",
+          "qualified_type": "peewee.UUIDField",
+          "args": [],
+          "kwargs": {
+            "primary_key": true
+          },
+          "line": 15
+        },
+        {
+          "name": "status",
+          "field_type": "CharField",
+          "qualified_type": "peewee.CharField",
+          "args": [],
+          "kwargs": {
+            "max_length": 32
+          },
+          "line": 22
+        },
+        {
+          "name": "total_amount",
+          "field_type": "DecimalField",
+          "qualified_type": "peewee.DecimalField",
+          "args": [],
+          "kwargs": {
+            "max_digits": 10,
+            "decimal_places": 2
+          },
+          "line": 30
+        }
+      ],
+      "meta": {
+        "table_name": "\"orders\""
+      }
+    },
+    {
+      "model_name": "Payment",
+      "qualified_name": "src.db.models.payment.Payment",
+      "file_path": "src/db/models/payment.py",
+      "start_line": 8,
+      "end_line": 52,
+      "bases": [
+        "BaseModel"
+      ],
+      "fields": [
+        {
+          "name": "id",
+          "field_type": "UUIDField",
+          "qualified_type": "peewee.UUIDField",
+          "args": [],
+          "kwargs": {
+            "primary_key": true
+          },
+          "line": 12
+        },
+        {
+          "name": "order",
+          "field_type": "ForeignKeyField",
+          "qualified_type": "peewee.ForeignKeyField",
+          "args": [
+            "Order"
+          ],
+          "kwargs": {
+            "backref": "\"payments\""
+          },
+          "line": 19
+        },
+        {
+          "name": "status",
+          "field_type": "CharField",
+          "qualified_type": "peewee.CharField",
+          "args": [],
+          "kwargs": {
+            "max_length": 32
+          },
+          "line": 28
+        }
+      ],
+      "meta": {
+        "table_name": "\"payments\""
+      }
+    }
+  ]
+}

@@ -1,27 +1,24 @@
-
 services:
   postgres:
     image: postgres:17
     environment:
-      POSTGRES_DB: structural_scaffolding
-      POSTGRES_USER: archai
-      POSTGRES_PASSWORD: archai
+      POSTGRES_DB: ${POSTGRES_DB:-structural_scaffolding}
+      POSTGRES_USER: ${POSTGRES_USER:-archai}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-archai}
     ports:
       - "55432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
 
   worker:
-    build: .
+    build: ./backend
     volumes:
-      - ./:/app
+      - ./backend:/app
+    env_file:
+      - ./backend/.env
     environment:
+      # Override DB URL for Docker network
       STRUCTURAL_SCAFFOLD_DB_URL: postgresql+psycopg://archai:archai@postgres:5432/structural_scaffolding
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      SUMMARY_PROVIDER: ${SUMMARY_PROVIDER:-openai}
-      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
-      ORCHESTRATION_LLM_PROVIDER: ${ORCHESTRATION_LLM_PROVIDER:-gemini}
-      ORCHESTRATION_GEMINI_MODEL: ${ORCHESTRATION_GEMINI_MODEL:-gemini-2.5-pro}
     depends_on:
       - postgres
 
