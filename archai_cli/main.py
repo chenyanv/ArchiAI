@@ -30,7 +30,12 @@ def _load_or_run_orchestration(
         return plan
 
     print("Running orchestration agent..." if not plan else "Re-running orchestration...")
-    plan = run_orchestration_agent(workspace_id, database_url)
+    plan = run_orchestration_agent(
+        workspace_id,
+        database_url,
+        debug=True,
+        logger=print,
+    )
     write_plan(plan, plan_path)
     print(f"✓ Generated plan with {len(plan.get('component_cards', []))} components")
     return plan

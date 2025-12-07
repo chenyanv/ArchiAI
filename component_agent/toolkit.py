@@ -9,6 +9,7 @@ from langchain_core.tools import BaseTool
 from tools import (
     build_call_graph_pagerank_tool,
     build_evaluate_neighbors_tool,
+    build_extract_subgraph_tool,
     build_find_paths_tool,
     build_find_relatives_tool,
     build_get_call_graph_context_tool,
@@ -24,6 +25,7 @@ def build_workspace_tools(workspace_id: str, database_url: str | None = None) ->
     """Create all tools bound to a specific workspace."""
     return [
         build_call_graph_pagerank_tool(workspace_id, database_url),
+        build_extract_subgraph_tool(workspace_id, database_url),
         build_find_paths_tool(workspace_id, database_url),
         build_find_relatives_tool(workspace_id, database_url),
         build_evaluate_neighbors_tool(workspace_id, database_url),
