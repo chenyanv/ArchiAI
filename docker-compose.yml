@@ -12,13 +12,15 @@ services:
 
   worker:
     build: ./backend
+    working_dir: /app
     volumes:
       - ./backend:/app
     env_file:
       - ./backend/.env
     environment:
-      # Override DB URL for Docker network
       STRUCTURAL_SCAFFOLD_DB_URL: postgresql+psycopg://archai:archai@postgres:5432/structural_scaffolding
+    ports:
+      - "8000:8000"
     depends_on:
       - postgres
 
