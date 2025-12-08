@@ -48,7 +48,6 @@ class WorkspaceOverviewResponse(BaseModel):
 # === Drilldown ===
 
 class DrilldownRequest(BaseModel):
-    node_id: str = Field(..., description="Node ID to drill down into")
     breadcrumbs: List[Dict[str, Any]] = Field(default_factory=list)
     component_card: Optional[Dict[str, Any]] = Field(
         default=None,
