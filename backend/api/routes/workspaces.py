@@ -2,6 +2,9 @@
 
 import asyncio
 import json
+import queue
+import re
+import threading
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException
@@ -26,6 +29,26 @@ from ..schemas import (
 )
 
 router = APIRouter()
+
+
+def _parse_log_message(log: str) -> Optional[Dict[str, str]]:
+    """Parse agent log into structured message."""
+    if log.startswith("[tool:start]"):
+        match = re.match(r"\[tool:start\] (\w+)", log)
+        if match:
+            return {"type": "tool", "message": f"Calling {match.group(1)}..."}
+    elif log.startswith("[tool:end]"):
+        match = re.match(r"\[tool:end\] (\w+)", log)
+        if match:
+            return {"type": "tool", "message": f"Got results from {match.group(1)}"}
+    elif log.startswith("[llm:output]"):
+        return {"type": "thinking", "message": "Analyzing results..."}
+    elif log.startswith("[orchestration]"):
+        if "Starting" in log:
+            return {"type": "thinking", "message": "Starting analysis..."}
+        elif "completed" in log:
+            return {"type": "thinking", "message": "Finalizing components..."}
+    return None
 
 
 def _get_workspace(workspace_id: str):
@@ -54,7 +77,7 @@ async def _stream_analysis(workspace_id: str) -> AsyncGenerator[str, None]:
 
     # Step 1: Check/build index
     yield sse_event("indexing", "Building structural index...")
-    await asyncio.sleep(0)  # Yield control
+    await asyncio.sleep(0)
 
     if not workspace.is_indexed:
         try:
@@ -67,25 +90,60 @@ async def _stream_analysis(workspace_id: str) -> AsyncGenerator[str, None]:
     else:
         yield sse_event("indexing", "Using cached index")
 
-    # Step 2: Run orchestration agent
-    yield sse_event("orchestrating", "Analyzing architecture...")
+    # Step 2: Run orchestration agent with progress streaming
+    yield sse_event("orchestrating", "Starting analysis...")
     await asyncio.sleep(0)
 
-    try:
-        loop = asyncio.get_event_loop()
-        plan = await loop.run_in_executor(
-            None,
-            lambda: run_orchestration_agent(
+    # Use queue to collect log messages from agent
+    log_queue: queue.Queue[Optional[str]] = queue.Queue()
+    result_holder: Dict[str, Any] = {}
+    error_holder: Dict[str, Exception] = {}
+
+    def run_agent():
+        def logger(msg: str):
+            log_queue.put(msg)
+
+        try:
+            plan = run_orchestration_agent(
                 workspace.workspace_id,
                 workspace.database_url,
-                debug=False,
-            ),
-        )
-    except Exception as e:
-        yield sse_event("error", f"Orchestration failed: {e}")
+                debug=True,
+                logger=logger,
+            )
+            result_holder["plan"] = plan
+        except Exception as e:
+            error_holder["error"] = e
+        finally:
+            log_queue.put(None)  # Signal completion
+
+    # Start agent in background thread
+    thread = threading.Thread(target=run_agent)
+    thread.start()
+
+    # Stream progress messages
+    last_message = ""
+    while True:
+        try:
+            log = log_queue.get(timeout=0.1)
+            if log is None:
+                break
+            parsed = _parse_log_message(log)
+            if parsed and parsed["message"] != last_message:
+                last_message = parsed["message"]
+                yield sse_event("orchestrating", parsed["message"])
+                await asyncio.sleep(0)
+        except queue.Empty:
+            await asyncio.sleep(0.1)
+
+    thread.join()
+
+    # Check for errors
+    if "error" in error_holder:
+        yield sse_event("error", f"Orchestration failed: {error_holder['error']}")
         return
 
     # Step 3: Return result
+    plan = result_holder.get("plan", {})
     overview = plan.get("system_overview", {})
     cards = plan.get("component_cards", [])
 

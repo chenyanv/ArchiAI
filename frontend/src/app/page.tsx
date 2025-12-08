@@ -1,9 +1,9 @@
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { Network, Waypoints, Bot, ArrowRight } from "lucide-react"
 import { GraphBackground } from "@/components/graph-background"
+import { RepoSearch } from "@/components/repo-search"
 import Link from "next/link"
 
 export default function Page() {
@@ -48,33 +48,7 @@ export default function Page() {
             From git clone to &apos;I get it&apos; in seconds.
           </p>
 
-          {/* Search Input Group */}
-          <div className="mx-auto max-w-2xl mb-6">
-            <div className="flex gap-2">
-              <Input
-                type="url"
-                placeholder="Paste GitHub Repository URL (e.g., https://github.com/infiniflow/ragflow)"
-                className="h-14 flex-1 text-base px-6 border-zinc-300 focus-visible:ring-black"
-              />
-              <Button className="h-14 px-8 bg-black hover:bg-zinc-800 text-white font-medium">
-                Analyze Architecture
-              </Button>
-            </div>
-          </div>
-
-          {/* Try these badges */}
-          <div className="flex flex-wrap items-center justify-center gap-2">
-            <span className="text-sm text-zinc-500">Try these:</span>
-            <Badge variant="outline" className="cursor-pointer hover:bg-zinc-100 border-zinc-300 text-zinc-700">
-              RAGFlow
-            </Badge>
-            <Badge variant="outline" className="cursor-pointer hover:bg-zinc-100 border-zinc-300 text-zinc-700">
-              LangChain
-            </Badge>
-            <Badge variant="outline" className="cursor-pointer hover:bg-zinc-100 border-zinc-300 text-zinc-700">
-              AutoGPT
-            </Badge>
-          </div>
+          <RepoSearch />
         </div>
       </section>
 
