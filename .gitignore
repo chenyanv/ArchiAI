@@ -26,6 +26,11 @@ node_modules/
 .vscode/
 .DS_Store
 
+# Claude Code (personal settings)
+.claude/
+.clauderc
+
+
 # Build outputs
 /build
 /dist
