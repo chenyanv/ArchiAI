@@ -98,11 +98,16 @@ export default function WorkspacePage() {
         return
       }
 
-      setState((prev) => ({
-        ...prev,
-        status: "analyzing",
-        logs: data.message ? [...prev.logs.filter((l) => l !== data.message), data.message] : prev.logs,
-      }))
+      setState((prev) => {
+        const newLogs = data.message
+          ? [...prev.logs.filter((l) => l !== data.message), data.message]
+          : prev.logs
+        return {
+          ...prev,
+          status: "analyzing",
+          logs: newLogs,
+        }
+      })
     }
 
     eventSource.onerror = () => {
@@ -441,16 +446,25 @@ function ResultsView({
       className="space-y-8"
     >
       {/* Header */}
-      <div>
-        <h1 className="text-3xl font-bold tracking-tight">{repoName}</h1>
-        <p className="text-zinc-600 mt-2 max-w-3xl leading-relaxed">
+      <div className="border-b border-zinc-200 pb-6">
+        <div className="flex items-start justify-between gap-4 mb-3">
+          <div>
+            <code className="text-sm font-mono text-zinc-500">{repoName}</code>
+            <h1 className="text-3xl font-bold tracking-tight mt-1">Architecture Overview</h1>
+          </div>
+          <Badge variant="outline" className="font-mono text-xs">
+            {components.length} {components.length === 1 ? "component" : "components"}
+          </Badge>
+        </div>
+
+        <p className="text-base text-zinc-600 max-w-3xl leading-relaxed">
           {overview.headline}
         </p>
 
         {overview.key_workflows.length > 0 && (
           <div className="flex flex-wrap gap-2 mt-4">
             {overview.key_workflows.map((workflow, i) => (
-              <Badge key={i} variant="secondary">
+              <Badge key={i} variant="secondary" className="bg-zinc-100 text-zinc-700 border-0 font-normal">
                 {workflow}
               </Badge>
             ))}
@@ -458,14 +472,12 @@ function ResultsView({
         )}
       </div>
 
-      {/* Stats */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <StatCard label="Components" value={components.length} icon={Boxes} />
-      </div>
-
       {/* Components */}
       <div>
-        <h2 className="text-xl font-semibold mb-4">Components</h2>
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-lg font-semibold text-zinc-900">Core Components</h2>
+          <span className="text-xs text-zinc-400">Click to explore internals</span>
+        </div>
         <div className="grid md:grid-cols-2 gap-4">
           {components.map((component) => (
             <ComponentCard
@@ -712,46 +724,45 @@ function ComponentCard({
 
   return (
     <Card
-      className={`hover:border-black/30 transition-colors cursor-pointer group ${isLoading ? "opacity-70 pointer-events-none" : ""}`}
+      className={`hover:border-zinc-400 hover:shadow-sm transition-all cursor-pointer group ${isLoading ? "opacity-70 pointer-events-none" : ""}`}
       onClick={onClick}
     >
-      <CardHeader>
-        <div className="flex items-start justify-between">
-          <div className="flex-1">
-            <CardTitle className="text-base group-hover:underline">
+      <CardHeader className="pb-3">
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 mb-1">
+              <code className="text-xs font-mono text-zinc-400 truncate">{component.component_id}</code>
+            </div>
+            <CardTitle className="text-base font-semibold group-hover:text-black">
               {component.module_name}
             </CardTitle>
-            <CardDescription className="font-mono text-xs mt-1">
-              {component.component_id}
-            </CardDescription>
           </div>
-          <div className="flex items-center gap-2">
-            <Badge variant="outline" className="font-mono text-xs">
-              {component.confidence}
-            </Badge>
+          <div className="flex items-center gap-2 shrink-0">
             {isLoading ? (
-              <Loader2 className="w-4 h-4 animate-spin" />
+              <Loader2 className="w-4 h-4 animate-spin text-zinc-400" />
             ) : (
-              <ChevronRight className="w-4 h-4 text-zinc-400 group-hover:text-black transition-colors" />
+              <ChevronRight className="w-4 h-4 text-zinc-300 group-hover:text-black transition-colors" />
             )}
           </div>
         </div>
       </CardHeader>
-      <CardContent className="space-y-3">
-        <p className="text-sm text-zinc-600">{component.business_signal}</p>
+      <CardContent className="space-y-3 pt-0">
+        <p className="text-sm text-zinc-600 leading-relaxed">{component.business_signal}</p>
 
         {component.objective.length > 0 && (
-          <ul className="space-y-1">
+          <ul className="space-y-1.5 border-l-2 border-zinc-200 pl-3">
             {component.objective.slice(0, 2).map((q, i) => (
-              <li key={i} className="text-xs text-zinc-500 flex items-start gap-1">
-                <ChevronRight className="w-3 h-3 mt-0.5 shrink-0" />
-                <span className="line-clamp-1">{q}</span>
+              <li key={i} className="text-xs text-zinc-500 leading-relaxed line-clamp-1">
+                {q}
               </li>
             ))}
           </ul>
         )}
 
-        <Progress value={confidence} className="h-1.5" />
+        <div className="flex items-center gap-2 pt-1">
+          <Progress value={confidence} className="h-1 flex-1" />
+          <span className="text-xs font-mono text-zinc-400">{confidence}%</span>
+        </div>
       </CardContent>
     </Card>
   )

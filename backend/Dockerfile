@@ -10,5 +10,5 @@ RUN pip install --upgrade pip && pip install -r requirements.txt
 
 COPY structural_scaffolding ./structural_scaffolding
 
-# Default: keep container running for interactive use
-CMD ["tail", "-f", "/dev/null"]
+# Start FastAPI application
+CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]

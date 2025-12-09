@@ -152,29 +152,48 @@ async def _stream_analysis(workspace_id: str) -> AsyncGenerator[str, None]:
     else:
         yield _sse_event("indexing", "Using cached index")
 
-    # Step 2: Run orchestration agent
-    yield _sse_event("orchestrating", "Starting analysis...")
-    await asyncio.sleep(0)
-
+    # Step 2: Check for cached orchestration result
     plan = None
-    async for event, result, error in _stream_agent_logs(
-        lambda logger: run_orchestration_agent(
-            workspace.workspace_id,
-            workspace.database_url,
-            debug=True,
-            logger=logger,
-        ),
-        "orchestrating",
-    ):
-        if event:
-            yield event
-        elif error:
-            yield _sse_event("error", f"Orchestration failed: {error}")
-            return
-        else:
-            plan = result
+    if workspace.plan_path.exists():
+        try:
+            with workspace.plan_path.open() as f:
+                plan = json.load(f)
+            yield _sse_event("orchestrating", "Using cached analysis...")
+            await asyncio.sleep(0.1)
+        except Exception:
+            plan = None
 
-    # Step 3: Return result
+    # Step 3: Run orchestration agent if needed
+    if not plan or not plan.get("component_cards"):
+        yield _sse_event("orchestrating", "Starting analysis...")
+        await asyncio.sleep(0)
+
+        async for event, result, error in _stream_agent_logs(
+            lambda logger: run_orchestration_agent(
+                workspace.workspace_id,
+                workspace.database_url,
+                debug=True,
+                logger=logger,
+            ),
+            "orchestrating",
+        ):
+            if event:
+                yield event
+            elif error:
+                yield _sse_event("error", f"Orchestration failed: {error}")
+                return
+            else:
+                plan = result
+                # Save plan to disk for future use
+                try:
+                    workspace.results_dir.mkdir(parents=True, exist_ok=True)
+                    with workspace.plan_path.open("w") as f:
+                        json.dump(plan, f, indent=2)
+                except Exception as e:
+                    # Log but don't fail if we can't save
+                    print(f"Warning: Failed to cache plan: {e}")
+
+    # Step 4: Return result
     overview = plan.get("system_overview", {}) if plan else {}
     cards = plan.get("component_cards", []) if plan else []
 
