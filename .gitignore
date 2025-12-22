@@ -43,3 +43,4 @@ scripts/
 tests_scratch/
 *.md
 !README.md
+workspaces/

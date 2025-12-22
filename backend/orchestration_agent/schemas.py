@@ -8,13 +8,8 @@ from pydantic import BaseModel, Field
 from typing_extensions import Literal
 
 
-ArchitectureLayer = Literal[
-    "core_domain",
-    "application",
-    "domain_support",
-    "infrastructure",
-    "unknown",  # For edge cases where layer cannot be determined
-]
+# Architecture layer is now dynamic - LLM decides the categories based on project type
+# Examples: "core", "api", "commands", "parser", "models", "utils", etc.
 
 
 ConfidenceLevel = Literal["high", "medium", "low"]
@@ -52,9 +47,9 @@ class ComponentCard(BaseModel):
         ...,
         description="What business capability this enables"
     )
-    architecture_layer: ArchitectureLayer = Field(
-        default="core_domain",
-        description="Which architectural layer this component belongs to"
+    architecture_layer: str = Field(
+        default="core",
+        description="Component category (LLM decides based on project type, e.g. 'core', 'api', 'commands', 'parser', 'models', 'utils')"
     )
     leading_landmarks: List[LandmarkRef] = Field(
         default_factory=list,
@@ -102,7 +97,6 @@ class OrchestrationResponse(BaseModel):
 
 
 __all__ = [
-    "ArchitectureLayer",
     "ConfidenceLevel",
     "EntryPointRef",
     "LandmarkRef",

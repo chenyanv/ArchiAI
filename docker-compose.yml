@@ -15,6 +15,7 @@ services:
     working_dir: /app
     volumes:
       - ./backend:/app
+      - ./workspaces:/root/.archai/workspaces
     env_file:
       - ./backend/.env
     environment:

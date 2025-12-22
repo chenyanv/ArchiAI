@@ -66,7 +66,7 @@ After gathering sufficient intelligence, produce your analysis as JSON:
       "module_name": "Name Based on Directory/Module",
       "directory": "the/directory/path",
       "business_signal": "What capability this provides",
-      "architecture_layer": "core_domain|application|domain_support|infrastructure",
+      "architecture_layer": "your-chosen-category",
       "leading_landmarks": [{"node_id": "...", "symbol": "...", "summary": "..."}],
       "objective": ["Investigation question 1", "Investigation question 2"],
       "confidence": "high|medium|low"
@@ -83,7 +83,22 @@ After gathering sufficient intelligence, produce your analysis as JSON:
 - Use this `id` value as the `node_id` field in your output
 - This enables downstream agents to explore the code graph
 
-Order component_cards by importance (core business first, infrastructure last).
+# ARCHITECTURE LAYER CATEGORIZATION
+
+**You decide the categories based on project type.** Don't force-fit into a fixed schema.
+
+Examples by project type:
+- **Web App**: "api", "services", "models", "utils", "config"
+- **CLI Tool**: "commands", "core", "output", "config"
+- **Library/SDK**: "public-api", "internal", "utils", "types"
+- **Compiler/Parser**: "lexer", "parser", "ast", "codegen"
+- **ML Project**: "models", "training", "data", "inference"
+
+Guidelines:
+- Use short, lowercase, kebab-case names (e.g. "core", "api", "data-models")
+- Choose 3-6 categories that make sense for THIS specific project
+- Group by logical purpose, not just directory structure
+- Order component_cards by importance (core functionality first)
 """
 
 
