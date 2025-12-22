@@ -72,6 +72,10 @@ After gathering sufficient intelligence, produce your analysis as JSON:
       "confidence": "high|medium|low"
     }
   ],
+  "business_flow": [
+    {"from_component": "api", "to_component": "services", "label": "calls"},
+    {"from_component": "services", "to_component": "models", "label": "uses"}
+  ],
   "deprioritised_signals": [
     {"signal": "...", "reason": "Why this is less important"}
   ]
@@ -99,6 +103,25 @@ Guidelines:
 - Choose 3-6 categories that make sense for THIS specific project
 - Group by logical purpose, not just directory structure
 - Order component_cards by importance (core functionality first)
+
+# BUSINESS FLOW
+
+Describe the main data/control flow between components using `business_flow`.
+
+**Direction rules:**
+- `from_component` = the caller, requester, or data source
+- `to_component` = the callee, provider, or data destination
+- Flow direction follows: Entry points → Business logic → Data/Storage
+
+**Examples:**
+- API handler calls service → `{"from_component": "api", "to_component": "services"}`
+- Service uses database models → `{"from_component": "services", "to_component": "models"}`
+- CLI command invokes core logic → `{"from_component": "commands", "to_component": "core"}`
+
+**Keep it simple:**
+- Only include 3-6 major flows that represent the main architecture
+- Use component_id values from your component_cards
+- Don't include every possible connection
 """
 
 

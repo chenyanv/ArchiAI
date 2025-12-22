@@ -17,7 +17,7 @@ import {
 import "@xyflow/react/dist/style.css"
 import { motion } from "framer-motion"
 import { Box, ChevronRight, Loader2 } from "lucide-react"
-import { type Component } from "@/lib/api"
+import { type Component, type ComponentEdge } from "@/lib/api"
 
 // === Constants ===
 
@@ -79,14 +79,15 @@ function groupComponents(components: Component[]) {
 
 function buildGraph(
   components: Component[],
+  businessFlow: ComponentEdge[],
   onClick: (c: Component) => void,
   loadingId: string | null
 ): { nodes: GraphNode[]; edges: Edge[] } {
   const { layers, groups } = groupComponents(components)
   const nodes: GraphNode[] = []
-  const edges: Edge[] = []
+  const componentIds = new Set(components.map(c => c.component_id))
 
-  let y = 0, globalIdx = 0, prevCenterIds: string[] = []
+  let y = 0, globalIdx = 0
 
   for (let li = 0; li < layers.length; li++) {
     const layer = layers[li]
@@ -108,7 +109,6 @@ function buildGraph(
     } as Node<LabelNodeData, "label">)
 
     // Component nodes
-    const currentIds: string[] = []
     items.forEach((c, i) => {
       const id = c.component_id
       nodes.push({
@@ -117,25 +117,26 @@ function buildGraph(
         position: { x: startX + (i % cols) * (LAYOUT.nodeW + LAYOUT.gapX), y: y + Math.floor(i / cols) * (LAYOUT.nodeH + LAYOUT.gapY) },
         data: { component: c, index: globalIdx++, onClick: () => onClick(c), isLoading: loadingId === id, style },
       } as Node<ComponentNodeData, "component">)
-      currentIds.push(id)
     })
 
-    // Edge between layers
-    if (prevCenterIds.length && currentIds.length) {
-      edges.push({
-        id: `e-${layer}`,
-        source: prevCenterIds[Math.floor(prevCenterIds.length / 2)],
-        target: currentIds[Math.floor(currentIds.length / 2)],
-        type: "smoothstep",
-        animated: true,
-        style: { stroke: "#d4d4d8", strokeWidth: 2 },
-        markerEnd: { type: MarkerType.ArrowClosed, color: "#d4d4d8" },
-      })
-    }
-
     y += Math.ceil(items.length / cols) * (LAYOUT.nodeH + LAYOUT.gapY) + LAYOUT.layerGap
-    prevCenterIds = currentIds
   }
+
+  // Build edges from business_flow (only for visible components)
+  const edges: Edge[] = businessFlow
+    .filter(e => componentIds.has(e.from_component) && componentIds.has(e.to_component))
+    .map((e, i) => ({
+      id: `flow-${i}`,
+      source: e.from_component,
+      target: e.to_component,
+      type: "smoothstep",
+      animated: true,
+      label: e.label,
+      labelStyle: { fontSize: 10, fill: "#71717a" },
+      labelBgStyle: { fill: "#fafafa", fillOpacity: 0.9 },
+      style: { stroke: "#a1a1aa", strokeWidth: 2 },
+      markerEnd: { type: MarkerType.ArrowClosed, color: "#a1a1aa" },
+    }))
 
   return { nodes, edges }
 }
@@ -197,13 +198,14 @@ const nodeTypes = { component: ComponentNode, label: LabelNode }
 
 interface Props {
   components: Component[]
+  businessFlow?: ComponentEdge[]
   onComponentClick: (c: Component) => void
   loadingId: string | null
 }
 
-export function ArchitectureGraph({ components, onComponentClick, loadingId }: Props) {
+export function ArchitectureGraph({ components, businessFlow = [], onComponentClick, loadingId }: Props) {
   const [nodes, setNodes, onNodesChange] = useNodesState<GraphNode>([])
-  const [edges, setEdges, onEdgesChange] = useEdgesState([])
+  const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([])
   const [visible, setVisible] = useState(0)
 
   // Progressive reveal
@@ -215,10 +217,10 @@ export function ArchitectureGraph({ components, onComponentClick, loadingId }: P
 
   // Update graph
   useEffect(() => {
-    const { nodes: n, edges: e } = buildGraph(components.slice(0, visible), onComponentClick, loadingId)
+    const { nodes: n, edges: e } = buildGraph(components.slice(0, visible), businessFlow, onComponentClick, loadingId)
     setNodes(n)
     setEdges(e)
-  }, [components, visible, onComponentClick, loadingId, setNodes, setEdges])
+  }, [components, visible, businessFlow, onComponentClick, loadingId, setNodes, setEdges])
 
   // Calculate height
   const height = useMemo(() => {

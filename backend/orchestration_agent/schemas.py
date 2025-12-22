@@ -65,6 +65,13 @@ class ComponentCard(BaseModel):
     )
 
 
+class ComponentEdge(BaseModel):
+    """A directed relationship between two components."""
+    from_component: str = Field(..., description="Source component_id (the caller/requester)")
+    to_component: str = Field(..., description="Target component_id (the callee/provider)")
+    label: Optional[str] = Field(default=None, description="Relationship type, e.g. 'calls', 'uses', 'depends on'")
+
+
 class DeprioritisedSignal(BaseModel):
     """A signal that was identified but deprioritised."""
     signal: str = Field(..., description="The signal identifier or symbol")
@@ -90,6 +97,10 @@ class OrchestrationResponse(BaseModel):
         default_factory=list,
         description="Identified business components ordered by importance"
     )
+    business_flow: List[ComponentEdge] = Field(
+        default_factory=list,
+        description="Main data/control flow between components"
+    )
     deprioritised_signals: List[DeprioritisedSignal] = Field(
         default_factory=list,
         description="Signals that were identified but not prioritized"
@@ -102,6 +113,7 @@ __all__ = [
     "LandmarkRef",
     "CoreModelRef",
     "ComponentCard",
+    "ComponentEdge",
     "DeprioritisedSignal",
     "SystemOverview",
     "OrchestrationResponse",

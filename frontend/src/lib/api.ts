@@ -17,12 +17,19 @@ export interface Component {
   leading_landmarks: Array<{ node_id?: string; symbol?: string; summary?: string }>
 }
 
+export interface ComponentEdge {
+  from_component: string
+  to_component: string
+  label?: string
+}
+
 export interface SSEEvent {
   status: "indexing" | "orchestrating" | "done" | "error"
   message: string
   data?: {
     system_overview: SystemOverview
     components: Component[]
+    business_flow?: ComponentEdge[]
   }
 }
 

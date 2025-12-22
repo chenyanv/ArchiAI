@@ -196,11 +196,12 @@ async def _stream_analysis(workspace_id: str) -> AsyncGenerator[str, None]:
     # Step 4: Return result
     overview = plan.get("system_overview", {}) if plan else {}
     cards = plan.get("component_cards", []) if plan else []
+    business_flow = plan.get("business_flow", []) if plan else []
 
     yield _sse_event(
         "done",
         f"Found {len(cards)} components",
-        {"system_overview": overview, "components": cards},
+        {"system_overview": overview, "components": cards, "business_flow": business_flow},
     )
 
 

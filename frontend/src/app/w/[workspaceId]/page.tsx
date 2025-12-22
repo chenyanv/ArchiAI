@@ -12,6 +12,7 @@ import {
   drilldownStream,
   getNodeSource,
   type Component,
+  type ComponentEdge,
   type SystemOverview,
   type SSEEvent,
   type DrilldownResponse,
@@ -42,6 +43,7 @@ type AnalysisState = {
   logs: string[]
   overview?: SystemOverview
   components?: Component[]
+  businessFlow?: ComponentEdge[]
   error?: string
 }
 
@@ -81,12 +83,14 @@ export default function WorkspacePage() {
 
       if (data.status === "done") {
         const components = data.data?.components || []
+        const businessFlow = data.data?.business_flow || []
         setState((prev) => ({
           ...prev,
           status: "done",
           logs: [...prev.logs, data.message],
           overview: data.data?.system_overview,
           components,
+          businessFlow,
         }))
         setHistory([{ type: "root", components }])
         eventSource.close()
@@ -296,6 +300,7 @@ export default function WorkspacePage() {
                 repoName={repoName}
                 overview={state.overview!}
                 components={currentEntry.components}
+                businessFlow={state.businessFlow || []}
                 onComponentClick={handleComponentClick}
                 loadingId={loadingNodeKey}
               />
@@ -325,12 +330,14 @@ function ResultsView({
   repoName,
   overview,
   components,
+  businessFlow,
   onComponentClick,
   loadingId,
 }: {
   repoName: string
   overview: SystemOverview
   components: Component[]
+  businessFlow: ComponentEdge[]
   onComponentClick: (component: Component) => void
   loadingId: string | null
 }) {
@@ -359,7 +366,7 @@ function ResultsView({
 
       <div>
         <h2 className="text-xl font-semibold mb-4">Architecture</h2>
-        <ArchitectureGraph components={components} onComponentClick={onComponentClick} loadingId={loadingId} />
+        <ArchitectureGraph components={components} businessFlow={businessFlow} onComponentClick={onComponentClick} loadingId={loadingId} />
       </div>
     </motion.div>
   )
