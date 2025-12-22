@@ -9,7 +9,9 @@ export interface SystemOverview {
 export interface Component {
   component_id: string
   module_name: string
+  directory?: string
   business_signal: string
+  architecture_layer: string  // Dynamic - LLM decides categories based on project type
   confidence: string
   objective: string[]
   leading_landmarks: Array<{ node_id?: string; symbol?: string; summary?: string }>
