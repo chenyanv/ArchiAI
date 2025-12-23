@@ -12,7 +12,11 @@ import {
   Position,
   Handle,
   type NodeProps,
+  type EdgeProps,
   MarkerType,
+  getSmoothStepPath,
+  EdgeLabelRenderer,
+  BaseEdge,
 } from "@xyflow/react"
 import "@xyflow/react/dist/style.css"
 import { motion } from "framer-motion"
@@ -32,7 +36,7 @@ const COLORS = [
   { color: "#4f46e5", bg: "#e0e7ff" },
 ]
 
-const LAYOUT = { nodeW: 260, nodeH: 120, gapX: 40, gapY: 80, layerGap: 140, labelW: 140 }
+const LAYOUT = { nodeW: 260, nodeH: 120, gapX: 140, gapY: 100, layerGap: 180, labelW: 140 }
 
 // === Types ===
 
@@ -166,14 +170,12 @@ function buildGraph(
       id: `flow-${i}`,
       source: e.from_component,
       target: e.to_component,
-      type: "smoothstep",
+      type: "labeled",
       animated: true,
       label: e.label,
-      labelStyle: { fontSize: 10, fill: "#71717a" },
-      labelBgStyle: { fill: "#fafafa", fillOpacity: 0.9 },
-      style: { stroke: "#a1a1aa", strokeWidth: 2 },
-      markerEnd: { type: MarkerType.ArrowClosed, color: "#a1a1aa" },
-      pathOptions: { offset },
+      style: { stroke: "#d1d5db", strokeWidth: 1.5, strokeDasharray: "4 2" },
+      markerEnd: { type: MarkerType.ArrowClosed, color: "#9ca3af" },
+      data: { offset },
     }
   })
 
@@ -231,7 +233,81 @@ function LabelNode({ data }: NodeProps<Node<LabelNodeData, "label">>) {
   )
 }
 
+// Custom edge with hover-to-reveal label
+function LabeledEdge({
+  id,
+  sourceX,
+  sourceY,
+  targetX,
+  targetY,
+  sourcePosition,
+  targetPosition,
+  label,
+  markerEnd,
+  style,
+  data,
+}: EdgeProps) {
+  const [hovered, setHovered] = useState(false)
+  const edgeOffset = data?.offset as number || 0
+  const [edgePath, labelX, labelY] = getSmoothStepPath({
+    sourceX,
+    sourceY,
+    sourcePosition,
+    targetX,
+    targetY,
+    targetPosition,
+    offset: edgeOffset,
+  })
+
+  return (
+    <g
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      style={{ cursor: "pointer" }}
+    >
+      {/* Invisible wider path for easier hover detection */}
+      <path
+        d={edgePath}
+        fill="none"
+        strokeWidth={24}
+        stroke="transparent"
+        pointerEvents="stroke"
+      />
+      <BaseEdge
+        id={id}
+        path={edgePath}
+        markerEnd={markerEnd}
+        style={{
+          ...style,
+          stroke: hovered ? "#6366f1" : (style?.stroke as string),
+          strokeWidth: hovered ? 2.5 : (style?.strokeWidth as number),
+        }}
+      />
+      {label && (
+        <EdgeLabelRenderer>
+          <div
+            style={{
+              position: "absolute",
+              transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`,
+              pointerEvents: "none",
+              zIndex: 1000,
+              opacity: hovered ? 1 : 0,
+              transition: "opacity 0.15s ease-in-out",
+            }}
+            className="nodrag nopan"
+          >
+            <div className="px-2 py-1 text-[10px] font-medium text-white bg-indigo-500 border border-indigo-600 rounded shadow-lg whitespace-nowrap">
+              {label as string}
+            </div>
+          </div>
+        </EdgeLabelRenderer>
+      )}
+    </g>
+  )
+}
+
 const nodeTypes = { component: ComponentNode, label: LabelNode }
+const edgeTypes = { labeled: LabeledEdge }
 
 // === Main Component ===
 
@@ -292,6 +368,7 @@ export function ArchitectureGraph({ rankedGroups, businessFlow = [], onComponent
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         nodeTypes={nodeTypes}
+        edgeTypes={edgeTypes}
         defaultViewport={{ x: 20, y: 20, zoom: 1 }}
         minZoom={0.3}
         maxZoom={1.5}
