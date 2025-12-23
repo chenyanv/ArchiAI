@@ -12,6 +12,7 @@ export interface Component {
   directory?: string
   business_signal: string
   architecture_layer: string  // Dynamic - LLM decides categories based on project type
+  rank: number  // Layout rank computed from business_flow (0 = entry, higher = downstream)
   confidence: string
   objective: string[]
   leading_landmarks: Array<{ node_id?: string; symbol?: string; summary?: string }>
@@ -23,12 +24,19 @@ export interface ComponentEdge {
   label?: string
 }
 
+// Pre-grouped components by rank (computed by backend)
+export interface RankedGroup {
+  rank: number
+  label: string  // "Entry", "Layer 1", "Layer 2", ..., "Data"
+  components: Component[]
+}
+
 export interface SSEEvent {
   status: "indexing" | "orchestrating" | "done" | "error"
   message: string
   data?: {
     system_overview: SystemOverview
-    components: Component[]
+    ranked_components: RankedGroup[]
     business_flow?: ComponentEdge[]
   }
 }

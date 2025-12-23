@@ -17,7 +17,7 @@ import {
 import "@xyflow/react/dist/style.css"
 import { motion } from "framer-motion"
 import { Box, ChevronRight, Loader2 } from "lucide-react"
-import { type Component, type ComponentEdge, type RankedGroup } from "@/lib/api"
+import { type Component, type ComponentEdge } from "@/lib/api"
 
 // === Constants ===
 
@@ -54,6 +54,74 @@ type GraphNode = Node<ComponentNodeData, "component"> | Node<LabelNodeData, "lab
 
 const toTitleCase = (s: string) => s.split("-").map(w => w[0]?.toUpperCase() + w.slice(1)).join(" ")
 
+// Compute rank for each component based on flow edges (longest path algorithm)
+function computeRanks(components: Component[], edges: ComponentEdge[]): Map<string, number> {
+  const ids = new Set(components.map(c => c.component_id))
+  const inEdges = new Map<string, string[]>()
+  const outEdges = new Map<string, string[]>()
+
+  // Build adjacency lists
+  for (const id of ids) {
+    inEdges.set(id, [])
+    outEdges.set(id, [])
+  }
+  for (const e of edges) {
+    if (ids.has(e.from_component) && ids.has(e.to_component)) {
+      outEdges.get(e.from_component)!.push(e.to_component)
+      inEdges.get(e.to_component)!.push(e.from_component)
+    }
+  }
+
+  // Compute ranks using longest path (BFS from sources)
+  const ranks = new Map<string, number>()
+  const queue: string[] = []
+
+  // Initialize: nodes with no incoming edges start at rank 0
+  for (const id of ids) {
+    if (inEdges.get(id)!.length === 0) {
+      ranks.set(id, 0)
+      queue.push(id)
+    }
+  }
+
+  // If no sources found (cycle or disconnected), set all to rank 0
+  if (queue.length === 0) {
+    for (const id of ids) ranks.set(id, 0)
+    return ranks
+  }
+
+  // Process in topological order
+  while (queue.length > 0) {
+    const curr = queue.shift()!
+    const currRank = ranks.get(curr)!
+    for (const next of outEdges.get(curr)!) {
+      const newRank = currRank + 1
+      if (!ranks.has(next) || ranks.get(next)! < newRank) {
+        ranks.set(next, newRank)
+        queue.push(next)
+      }
+    }
+  }
+
+  // Handle disconnected nodes (no edges) - put them at rank 0
+  for (const id of ids) {
+    if (!ranks.has(id)) ranks.set(id, 0)
+  }
+
+  return ranks
+}
+
+// Group components by computed rank
+function groupByRank(components: Component[], ranks: Map<string, number>): Map<number, Component[]> {
+  const groups = new Map<number, Component[]>()
+  for (const c of components) {
+    const rank = ranks.get(c.component_id) ?? 0
+    if (!groups.has(rank)) groups.set(rank, [])
+    groups.get(rank)!.push(c)
+  }
+  return groups
+}
+
 // Get color based on architecture_layer (for visual grouping)
 function getLayerStyle(layer: string, layerIndex: Map<string, number>): { color: string; bg: string } {
   const idx = layerIndex.get(layer) ?? 0
@@ -73,43 +141,47 @@ function buildLayerIndex(components: Component[]): Map<string, number> {
 // === Layout ===
 
 function buildGraph(
-  rankedGroups: RankedGroup[],
+  components: Component[],
   businessFlow: ComponentEdge[],
   onClick: (c: Component) => void,
   loadingId: string | null
 ): { nodes: GraphNode[]; edges: Edge[] } {
-  if (rankedGroups.length === 0) return { nodes: [], edges: [] }
+  if (components.length === 0) return { nodes: [], edges: [] }
 
-  // Build layer index for colors from all components
-  const allComponents = rankedGroups.flatMap(g => g.components)
-  const layerIndex = buildLayerIndex(allComponents)
-  const componentIds = new Set(allComponents.map(c => c.component_id))
+  // Step 1: Compute ranks based on flow edges
+  const ranks = computeRanks(components, businessFlow)
+  const rankGroups = groupByRank(components, ranks)
+  const layerIndex = buildLayerIndex(components)
 
+  // Step 2: Build nodes by rank
   const nodes: GraphNode[] = []
+  const componentIds = new Set(components.map(c => c.component_id))
+  const sortedRanks = Array.from(rankGroups.keys()).sort((a, b) => a - b)
+
   let y = 0
   let globalIdx = 0
 
-  // Iterate over pre-grouped ranks from backend
-  for (const group of rankedGroups) {
-    const { rank, label, components } = group
-    if (!components.length) continue
+  for (const rank of sortedRanks) {
+    const items = rankGroups.get(rank) || []
+    if (!items.length) continue
 
-    const cols = Math.min(3, components.length)
+    const cols = Math.min(3, items.length)
     const startX = 40
-    const labelHeight = 60
 
-    // Add rank label (label comes from backend)
+    // Add rank label
+    const rankLabel = rank === 0 ? "Entry" : rank === sortedRanks[sortedRanks.length - 1] ? "Data" : `Layer ${rank}`
     nodes.push({
       id: `lbl-rank-${rank}`,
       type: "label",
       position: { x: 0, y },
-      data: { label, color: "#71717a", count: components.length },
+      data: { label: rankLabel, color: "#71717a", count: items.length },
       draggable: false,
       selectable: false,
     } as Node<LabelNodeData, "label">)
 
     // Add component nodes (offset by label height)
-    components.forEach((c: Component, i: number) => {
+    const labelHeight = 60
+    items.forEach((c: Component, i: number) => {
       const id = c.component_id
       const layer = c.architecture_layer || "other"
       const style = getLayerStyle(layer, layerIndex)
@@ -131,38 +203,13 @@ function buildGraph(
       } as Node<ComponentNodeData, "component">)
     })
 
-    y += labelHeight + Math.ceil(components.length / cols) * (LAYOUT.nodeH + LAYOUT.gapY) + LAYOUT.layerGap
+    y += labelHeight + Math.ceil(items.length / cols) * (LAYOUT.nodeH + LAYOUT.gapY) + LAYOUT.layerGap
   }
 
-  // Build edges from business_flow with offset to avoid overlapping
-  const validEdges = businessFlow.filter(e => componentIds.has(e.from_component) && componentIds.has(e.to_component))
-
-  // Count edges per source/target to calculate offsets
-  const sourceCount = new Map<string, number>()
-  const targetCount = new Map<string, number>()
-  validEdges.forEach(e => {
-    sourceCount.set(e.from_component, (sourceCount.get(e.from_component) || 0) + 1)
-    targetCount.set(e.to_component, (targetCount.get(e.to_component) || 0) + 1)
-  })
-
-  // Track current index per source/target for offset calculation
-  const sourceIdx = new Map<string, number>()
-  const targetIdx = new Map<string, number>()
-
-  const edges: Edge[] = validEdges.map((e, i) => {
-    const srcTotal = sourceCount.get(e.from_component) || 1
-    const tgtTotal = targetCount.get(e.to_component) || 1
-    const srcIdx = sourceIdx.get(e.from_component) || 0
-    const tgtIdx = targetIdx.get(e.to_component) || 0
-    sourceIdx.set(e.from_component, srcIdx + 1)
-    targetIdx.set(e.to_component, tgtIdx + 1)
-
-    // Calculate offset: center the edges, spread by 20px
-    const offset = srcTotal > 1 || tgtTotal > 1
-      ? (srcIdx - (srcTotal - 1) / 2) * 20
-      : 0
-
-    return {
+  // Step 3: Build edges from business_flow
+  const edges: Edge[] = businessFlow
+    .filter(e => componentIds.has(e.from_component) && componentIds.has(e.to_component))
+    .map((e, i) => ({
       id: `flow-${i}`,
       source: e.from_component,
       target: e.to_component,
@@ -173,9 +220,7 @@ function buildGraph(
       labelBgStyle: { fill: "#fafafa", fillOpacity: 0.9 },
       style: { stroke: "#a1a1aa", strokeWidth: 2 },
       markerEnd: { type: MarkerType.ArrowClosed, color: "#a1a1aa" },
-      pathOptions: { offset },
-    }
-  })
+    }))
 
   return { nodes, edges }
 }
@@ -236,53 +281,42 @@ const nodeTypes = { component: ComponentNode, label: LabelNode }
 // === Main Component ===
 
 interface Props {
-  rankedGroups: RankedGroup[]
+  components: Component[]
   businessFlow?: ComponentEdge[]
   onComponentClick: (c: Component) => void
   loadingId: string | null
 }
 
-export function ArchitectureGraph({ rankedGroups, businessFlow = [], onComponentClick, loadingId }: Props) {
+export function ArchitectureGraph({ components, businessFlow = [], onComponentClick, loadingId }: Props) {
   const [nodes, setNodes, onNodesChange] = useNodesState<GraphNode>([])
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([])
-  const totalComponents = rankedGroups.reduce((sum, g) => sum + g.components.length, 0)
   const [visible, setVisible] = useState(0)
 
-  // Progressive reveal (by component count)
+  // Progressive reveal
   useEffect(() => {
     setVisible(0)
-    const t = setInterval(() => setVisible(v => v >= totalComponents ? (clearInterval(t), v) : v + 1), 100)
+    const t = setInterval(() => setVisible(v => v >= components.length ? (clearInterval(t), v) : v + 1), 100)
     return () => clearInterval(t)
-  }, [totalComponents])
-
-  // Build visible groups based on component count
-  const visibleGroups = useMemo(() => {
-    let count = 0
-    return rankedGroups.map(group => {
-      const visibleComponents = group.components.filter(() => {
-        count++
-        return count <= visible
-      })
-      return { ...group, components: visibleComponents }
-    }).filter(g => g.components.length > 0)
-  }, [rankedGroups, visible])
+  }, [components.length])
 
   // Update graph
   useEffect(() => {
-    const { nodes: n, edges: e } = buildGraph(visibleGroups, businessFlow, onComponentClick, loadingId)
+    const { nodes: n, edges: e } = buildGraph(components.slice(0, visible), businessFlow, onComponentClick, loadingId)
     setNodes(n)
     setEdges(e)
-  }, [visibleGroups, businessFlow, onComponentClick, loadingId, setNodes, setEdges])
+  }, [components, visible, businessFlow, onComponentClick, loadingId, setNodes, setEdges])
 
-  // Calculate height based on ranks (pre-grouped by backend)
+  // Calculate height based on ranks
   const height = useMemo(() => {
+    const ranks = computeRanks(components, businessFlow)
+    const rankGroups = groupByRank(components, ranks)
     const labelHeight = 60
     let total = 100
-    for (const group of rankedGroups) {
-      total += labelHeight + Math.ceil(group.components.length / 3) * (LAYOUT.nodeH + LAYOUT.gapY) + LAYOUT.layerGap
+    for (const items of rankGroups.values()) {
+      total += labelHeight + Math.ceil(items.length / 3) * (LAYOUT.nodeH + LAYOUT.gapY) + LAYOUT.layerGap
     }
     return Math.max(500, total)
-  }, [rankedGroups])
+  }, [components, businessFlow])
 
   return (
     <div className="w-full rounded-xl border border-zinc-200 bg-zinc-50/50 overflow-hidden" style={{ height }}>

@@ -13,6 +13,7 @@ import {
   getNodeSource,
   type Component,
   type ComponentEdge,
+  type RankedGroup,
   type SystemOverview,
   type SSEEvent,
   type DrilldownResponse,
@@ -31,7 +32,7 @@ import {
 
 type HistoryEntry = {
   type: "root"
-  components: Component[]
+  rankedGroups: RankedGroup[]
 } | {
   type: "drilldown"
   response: DrilldownResponse
@@ -42,7 +43,7 @@ type AnalysisState = {
   status: "loading" | "analyzing" | "done" | "error"
   logs: string[]
   overview?: SystemOverview
-  components?: Component[]
+  rankedGroups?: RankedGroup[]
   businessFlow?: ComponentEdge[]
   error?: string
 }
@@ -82,17 +83,17 @@ export default function WorkspacePage() {
       }
 
       if (data.status === "done") {
-        const components = data.data?.components || []
+        const rankedGroups = data.data?.ranked_components || []
         const businessFlow = data.data?.business_flow || []
         setState((prev) => ({
           ...prev,
           status: "done",
           logs: [...prev.logs, data.message],
           overview: data.data?.system_overview,
-          components,
+          rankedGroups,
           businessFlow,
         }))
-        setHistory([{ type: "root", components }])
+        setHistory([{ type: "root", rankedGroups }])
         eventSource.close()
         return
       }
@@ -299,7 +300,7 @@ export default function WorkspacePage() {
                 key="results"
                 repoName={repoName}
                 overview={state.overview!}
-                components={currentEntry.components}
+                rankedGroups={currentEntry.rankedGroups}
                 businessFlow={state.businessFlow || []}
                 onComponentClick={handleComponentClick}
                 loadingId={loadingNodeKey}
@@ -329,18 +330,20 @@ export default function WorkspacePage() {
 function ResultsView({
   repoName,
   overview,
-  components,
+  rankedGroups,
   businessFlow,
   onComponentClick,
   loadingId,
 }: {
   repoName: string
   overview: SystemOverview
-  components: Component[]
+  rankedGroups: RankedGroup[]
   businessFlow: ComponentEdge[]
   onComponentClick: (component: Component) => void
   loadingId: string | null
 }) {
+  const totalComponents = rankedGroups.reduce((sum, g) => sum + g.components.length, 0)
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 20 }}
@@ -361,12 +364,12 @@ function ResultsView({
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <StatCard label="Components" value={components.length} icon={Boxes} />
+        <StatCard label="Components" value={totalComponents} icon={Boxes} />
       </div>
 
       <div>
         <h2 className="text-xl font-semibold mb-4">Architecture</h2>
-        <ArchitectureGraph components={components} businessFlow={businessFlow} onComponentClick={onComponentClick} loadingId={loadingId} />
+        <ArchitectureGraph rankedGroups={rankedGroups} businessFlow={businessFlow} onComponentClick={onComponentClick} loadingId={loadingId} />
       </div>
     </motion.div>
   )
