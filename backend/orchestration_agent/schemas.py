@@ -51,6 +51,10 @@ class ComponentCard(BaseModel):
         default="core",
         description="Component category (LLM decides based on project type, e.g. 'core', 'api', 'commands', 'parser', 'models', 'utils')"
     )
+    rank: int = Field(
+        default=0,
+        description="Layout rank computed from business_flow (0 = entry points, higher = downstream)"
+    )
     leading_landmarks: List[LandmarkRef] = Field(
         default_factory=list,
         description="Key structural landmarks in this component"

@@ -104,24 +104,27 @@ Guidelines:
 - Group by logical purpose, not just directory structure
 - Order component_cards by importance (core functionality first)
 
-# BUSINESS FLOW
+# BUSINESS FLOW (CRITICAL FOR LAYOUT)
 
-Describe the main data/control flow between components using `business_flow`.
+The `business_flow` edges determine how components are positioned in the visualization.
+Components are laid out top-to-bottom based on flow direction.
 
-**Direction rules:**
-- `from_component` = the caller, requester, or data source
-- `to_component` = the callee, provider, or data destination
-- Flow direction follows: Entry points → Business logic → Data/Storage
+**Rules:**
+- `from_component` = caller/requester (appears ABOVE in the diagram)
+- `to_component` = callee/provider (appears BELOW in the diagram)
+- Every component should appear in at least one edge (either as source or target)
+- Entry points (no incoming edges) appear at the top
+- Data/storage components (no outgoing edges) appear at the bottom
 
 **Examples:**
-- API handler calls service → `{"from_component": "api", "to_component": "services"}`
-- Service uses database models → `{"from_component": "services", "to_component": "models"}`
-- CLI command invokes core logic → `{"from_component": "commands", "to_component": "core"}`
+- API calls service → `{"from_component": "api", "to_component": "services"}`
+- Service uses models → `{"from_component": "services", "to_component": "models"}`
+- CLI invokes core → `{"from_component": "cli", "to_component": "core"}`
 
-**Keep it simple:**
-- Only include 3-6 major flows that represent the main architecture
+**Guidelines:**
+- Include enough edges so all components are connected to the flow
 - Use component_id values from your component_cards
-- Don't include every possible connection
+- Typical flow: Entry → Business Logic → Data
 """
 
 

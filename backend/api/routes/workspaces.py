@@ -28,6 +28,96 @@ from ..schemas import (
     WorkspaceOverviewResponse,
 )
 
+
+def compute_ranks(
+    components: List[Dict[str, Any]],
+    business_flow: List[Dict[str, Any]]
+) -> Dict[str, int]:
+    """Compute layout ranks based on business_flow edges using longest path algorithm."""
+    ids = {c["component_id"] for c in components}
+    in_edges: Dict[str, List[str]] = {id: [] for id in ids}
+    out_edges: Dict[str, List[str]] = {id: [] for id in ids}
+    has_edge: set = set()
+
+    # Build adjacency lists
+    for edge in business_flow:
+        from_id = edge.get("from_component")
+        to_id = edge.get("to_component")
+        if from_id in ids and to_id in ids:
+            out_edges[from_id].append(to_id)
+            in_edges[to_id].append(from_id)
+            has_edge.add(from_id)
+            has_edge.add(to_id)
+
+    # Compute ranks using longest path (BFS from sources)
+    ranks: Dict[str, int] = {}
+    queue_list: List[str] = []
+
+    # Initialize: nodes with no incoming edges (but have some edge) start at rank 0
+    for id in ids:
+        if id in has_edge and not in_edges[id]:
+            ranks[id] = 0
+            queue_list.append(id)
+
+    # Process in topological order
+    max_rank = 0
+    while queue_list:
+        curr = queue_list.pop(0)
+        curr_rank = ranks[curr]
+        max_rank = max(max_rank, curr_rank)
+        for next_id in out_edges[curr]:
+            new_rank = curr_rank + 1
+            if next_id not in ranks or ranks[next_id] < new_rank:
+                ranks[next_id] = new_rank
+                max_rank = max(max_rank, new_rank)
+                queue_list.append(next_id)
+
+    # Disconnected nodes (no edges at all) go to the last rank
+    for id in ids:
+        if id not in ranks:
+            ranks[id] = max_rank + 1 if max_rank > 0 else 0
+
+    return ranks
+
+
+def group_by_rank(
+    components: List[Dict[str, Any]],
+    business_flow: List[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
+    """Group components by computed ranks, returning pre-grouped structure for frontend."""
+    ranks = compute_ranks(components, business_flow)
+
+    # Group components by rank
+    groups: Dict[int, List[Dict[str, Any]]] = {}
+    for card in components:
+        rank = ranks.get(card["component_id"], 0)
+        card["rank"] = rank  # Keep rank on individual cards for reference
+        if rank not in groups:
+            groups[rank] = []
+        groups[rank].append(card)
+
+    # Sort by rank and build result
+    sorted_ranks = sorted(groups.keys())
+    max_rank = sorted_ranks[-1] if sorted_ranks else 0
+
+    result = []
+    for rank in sorted_ranks:
+        # Determine label based on position
+        if rank == 0:
+            label = "Entry"
+        elif rank == max_rank:
+            label = "Data"
+        else:
+            label = f"Layer {rank}"
+
+        result.append({
+            "rank": rank,
+            "label": label,
+            "components": groups[rank]
+        })
+
+    return result
+
 router = APIRouter()
 
 T = TypeVar("T")
@@ -193,15 +283,19 @@ async def _stream_analysis(workspace_id: str) -> AsyncGenerator[str, None]:
                     # Log but don't fail if we can't save
                     print(f"Warning: Failed to cache plan: {e}")
 
-    # Step 4: Return result
+    # Step 4: Return result with pre-grouped ranked components
     overview = plan.get("system_overview", {}) if plan else {}
     cards = plan.get("component_cards", []) if plan else []
     business_flow = plan.get("business_flow", []) if plan else []
 
+    # Group components by rank (computed from business_flow)
+    ranked_components = group_by_rank(cards, business_flow)
+    total_components = sum(len(g["components"]) for g in ranked_components)
+
     yield _sse_event(
         "done",
-        f"Found {len(cards)} components",
-        {"system_overview": overview, "components": cards, "business_flow": business_flow},
+        f"Found {total_components} components",
+        {"system_overview": overview, "ranked_components": ranked_components, "business_flow": business_flow},
     )
 
 
