@@ -49,11 +49,11 @@ class ComponentCard(BaseModel):
     )
     architecture_layer: str = Field(
         default="core",
-        description="Component category (LLM decides based on project type, e.g. 'core', 'api', 'commands', 'parser', 'models', 'utils')"
+        description="Must match one of the layer_order values. Determines vertical position in visualization."
     )
     rank: int = Field(
         default=0,
-        description="Layout rank computed from business_flow (0 = entry points, higher = downstream)"
+        description="Layout rank computed from layer_order (0 = top layer, higher = lower in visualization)"
     )
     leading_landmarks: List[LandmarkRef] = Field(
         default_factory=list,
@@ -97,13 +97,17 @@ class OrchestrationResponse(BaseModel):
         ...,
         description="High-level system overview"
     )
+    layer_order: List[str] = Field(
+        default_factory=list,
+        description="Ordered list of architecture layers from top to bottom (e.g. ['interface', 'orchestration', 'core', 'data'])"
+    )
     component_cards: List[ComponentCard] = Field(
         default_factory=list,
         description="Identified business components ordered by importance"
     )
     business_flow: List[ComponentEdge] = Field(
         default_factory=list,
-        description="Main data/control flow between components"
+        description="Connection arrows between components (does not affect layout)"
     )
     deprioritised_signals: List[DeprioritisedSignal] = Field(
         default_factory=list,

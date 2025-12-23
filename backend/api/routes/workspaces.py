@@ -29,91 +29,62 @@ from ..schemas import (
 )
 
 
-def compute_ranks(
+def to_title_case(s: str) -> str:
+    """Convert kebab-case to Title Case."""
+    return " ".join(word.capitalize() for word in s.split("-"))
+
+
+def group_by_layer(
     components: List[Dict[str, Any]],
-    business_flow: List[Dict[str, Any]]
-) -> Dict[str, int]:
-    """Compute layout ranks based on business_flow edges using longest path algorithm."""
-    ids = {c["component_id"] for c in components}
-    in_edges: Dict[str, List[str]] = {id: [] for id in ids}
-    out_edges: Dict[str, List[str]] = {id: [] for id in ids}
-    has_edge: set = set()
-
-    # Build adjacency lists
-    for edge in business_flow:
-        from_id = edge.get("from_component")
-        to_id = edge.get("to_component")
-        if from_id in ids and to_id in ids:
-            out_edges[from_id].append(to_id)
-            in_edges[to_id].append(from_id)
-            has_edge.add(from_id)
-            has_edge.add(to_id)
-
-    # Compute ranks using longest path (BFS from sources)
-    ranks: Dict[str, int] = {}
-    queue_list: List[str] = []
-
-    # Initialize: nodes with no incoming edges (but have some edge) start at rank 0
-    for id in ids:
-        if id in has_edge and not in_edges[id]:
-            ranks[id] = 0
-            queue_list.append(id)
-
-    # Process in topological order
-    max_rank = 0
-    while queue_list:
-        curr = queue_list.pop(0)
-        curr_rank = ranks[curr]
-        max_rank = max(max_rank, curr_rank)
-        for next_id in out_edges[curr]:
-            new_rank = curr_rank + 1
-            if next_id not in ranks or ranks[next_id] < new_rank:
-                ranks[next_id] = new_rank
-                max_rank = max(max_rank, new_rank)
-                queue_list.append(next_id)
-
-    # Disconnected nodes (no edges at all) go to the last rank
-    for id in ids:
-        if id not in ranks:
-            ranks[id] = max_rank + 1 if max_rank > 0 else 0
-
-    return ranks
-
-
-def group_by_rank(
-    components: List[Dict[str, Any]],
-    business_flow: List[Dict[str, Any]]
+    layer_order: List[str]
 ) -> List[Dict[str, Any]]:
-    """Group components by computed ranks, returning pre-grouped structure for frontend."""
-    ranks = compute_ranks(components, business_flow)
+    """Group components by architecture_layer, ordered by layer_order.
 
-    # Group components by rank
-    groups: Dict[int, List[Dict[str, Any]]] = {}
+    Layout is determined by layer_order, not by call relationships.
+    """
+    if not layer_order:
+        # Fallback: if no layer_order, group all components together
+        for card in components:
+            card["rank"] = 0
+        return [{
+            "rank": 0,
+            "label": "Components",
+            "components": components
+        }]
+
+    # Build layer -> rank mapping
+    layer_to_rank = {layer: idx for idx, layer in enumerate(layer_order)}
+
+    # Group components by their architecture_layer
+    groups: Dict[str, List[Dict[str, Any]]] = {layer: [] for layer in layer_order}
+    ungrouped: List[Dict[str, Any]] = []
+
     for card in components:
-        rank = ranks.get(card["component_id"], 0)
-        card["rank"] = rank  # Keep rank on individual cards for reference
-        if rank not in groups:
-            groups[rank] = []
-        groups[rank].append(card)
-
-    # Sort by rank and build result
-    sorted_ranks = sorted(groups.keys())
-    max_rank = sorted_ranks[-1] if sorted_ranks else 0
-
-    result = []
-    for rank in sorted_ranks:
-        # Determine label based on position
-        if rank == 0:
-            label = "Entry"
-        elif rank == max_rank:
-            label = "Data"
+        layer = card.get("architecture_layer", "")
+        if layer in groups:
+            card["rank"] = layer_to_rank[layer]
+            groups[layer].append(card)
         else:
-            label = f"Layer {rank}"
+            # Component has unknown layer, put at the end
+            card["rank"] = len(layer_order)
+            ungrouped.append(card)
 
+    # Build result in layer_order sequence
+    result = []
+    for idx, layer in enumerate(layer_order):
+        if groups[layer]:
+            result.append({
+                "rank": idx,
+                "label": to_title_case(layer),
+                "components": groups[layer]
+            })
+
+    # Add ungrouped components at the end if any
+    if ungrouped:
         result.append({
-            "rank": rank,
-            "label": label,
-            "components": groups[rank]
+            "rank": len(layer_order),
+            "label": "Other",
+            "components": ungrouped
         })
 
     return result
@@ -283,13 +254,14 @@ async def _stream_analysis(workspace_id: str) -> AsyncGenerator[str, None]:
                     # Log but don't fail if we can't save
                     print(f"Warning: Failed to cache plan: {e}")
 
-    # Step 4: Return result with pre-grouped ranked components
+    # Step 4: Return result with pre-grouped components by layer
     overview = plan.get("system_overview", {}) if plan else {}
+    layer_order = plan.get("layer_order", []) if plan else []
     cards = plan.get("component_cards", []) if plan else []
     business_flow = plan.get("business_flow", []) if plan else []
 
-    # Group components by rank (computed from business_flow)
-    ranked_components = group_by_rank(cards, business_flow)
+    # Group components by architecture_layer (ordered by layer_order)
+    ranked_components = group_by_layer(cards, layer_order)
     total_components = sum(len(g["components"]) for g in ranked_components)
 
     yield _sse_event(

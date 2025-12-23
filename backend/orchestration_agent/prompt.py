@@ -60,21 +60,22 @@ After gathering sufficient intelligence, produce your analysis as JSON:
     "headline": "What this system does in one sentence",
     "key_workflows": ["Workflow 1", "Workflow 2"]
   },
+  "layer_order": ["interface", "orchestration", "core-engine", "infrastructure"],
   "component_cards": [
     {
       "component_id": "kebab-case-id",
       "module_name": "Name Based on Directory/Module",
       "directory": "the/directory/path",
       "business_signal": "What capability this provides",
-      "architecture_layer": "your-chosen-category",
+      "architecture_layer": "core-engine",
       "leading_landmarks": [{"node_id": "...", "symbol": "...", "summary": "..."}],
       "objective": ["Investigation question 1", "Investigation question 2"],
       "confidence": "high|medium|low"
     }
   ],
   "business_flow": [
-    {"from_component": "api", "to_component": "services", "label": "calls"},
-    {"from_component": "services", "to_component": "models", "label": "uses"}
+    {"from_component": "api", "to_component": "agent", "label": "dispatches to"},
+    {"from_component": "agent", "to_component": "parser", "label": "uses"}
   ],
   "deprioritised_signals": [
     {"signal": "...", "reason": "Why this is less important"}
@@ -87,44 +88,57 @@ After gathering sufficient intelligence, produce your analysis as JSON:
 - Use this `id` value as the `node_id` field in your output
 - This enables downstream agents to explore the code graph
 
-# ARCHITECTURE LAYER CATEGORIZATION
+# ARCHITECTURE LAYERS (CRITICAL FOR LAYOUT)
 
-**You decide the categories based on project type.** Don't force-fit into a fixed schema.
+You must define `layer_order` - an ordered list of architecture layers from TOP to BOTTOM of the visualization.
+Each component's `architecture_layer` must reference one of these layers.
 
-Examples by project type:
-- **Web App**: "api", "services", "models", "utils", "config"
-- **CLI Tool**: "commands", "core", "output", "config"
-- **Library/SDK**: "public-api", "internal", "utils", "types"
-- **Compiler/Parser**: "lexer", "parser", "ast", "codegen"
-- **ML Project**: "models", "training", "data", "inference"
+**How to think about layers:**
 
-Guidelines:
-- Use short, lowercase, kebab-case names (e.g. "core", "api", "data-models")
-- Choose 3-6 categories that make sense for THIS specific project
-- Group by logical purpose, not just directory structure
-- Order component_cards by importance (core functionality first)
+Instead of generic tech layers, organize by **Architectural Role**:
 
-# BUSINESS FLOW (CRITICAL FOR LAYOUT)
+1. **Interface Layer** (typically at top)
+   - Entry points: APIs, CLIs, Admin panels, Web UIs
+   - Where external requests enter the system
 
-The `business_flow` edges determine how components are positioned in the visualization.
-Components are laid out top-to-bottom based on flow direction.
+2. **Orchestration Layer** (upper-middle)
+   - Agents, workflow engines, coordinators, routers
+   - Code that decides "what to do next" but delegates heavy lifting
 
-**Rules:**
-- `from_component` = caller/requester (appears ABOVE in the diagram)
-- `to_component` = callee/provider (appears BELOW in the diagram)
-- Every component should appear in at least one edge (either as source or target)
-- Entry points (no incoming edges) appear at the top
-- Data/storage components (no outgoing edges) appear at the bottom
+3. **Core Engine Layer** (lower-middle) - THE CROWN JEWELS
+   - The unique algorithms, parsers, or specialized logic that makes this product special
+   - Even if "called" by orchestration, these are functionally central
+   - Examples: A PDF parser, a trading algorithm, a RAG pipeline, a compiler frontend
 
-**Examples:**
-- API calls service → `{"from_component": "api", "to_component": "services"}`
-- Service uses models → `{"from_component": "services", "to_component": "models"}`
-- CLI invokes core → `{"from_component": "cli", "to_component": "core"}`
+4. **Infrastructure Layer** (typically at bottom)
+   - Database wrappers, third-party integrations, storage, generic utilities
+   - "Dumb" pipes and storage that could be swapped out
+
+**Example layer_order by project type:**
+- **Web App**: `["api", "services", "domain", "data"]`
+- **CLI Tool**: `["commands", "core", "utils"]`
+- **RAG System**: `["interface", "orchestration", "processing", "storage"]`
+- **Compiler**: `["frontend", "ir", "backend", "runtime"]`
+- **ML Pipeline**: `["api", "training", "models", "data"]`
 
 **Guidelines:**
-- Include enough edges so all components are connected to the flow
-- Use component_id values from your component_cards
-- Typical flow: Entry → Business Logic → Data
+- Choose 3-5 layers that make sense for THIS specific project
+- Use short, lowercase, kebab-case names
+- Order from "user-facing" to "low-level infrastructure"
+- Identify the "Core Engine" - what makes this project unique
+
+# BUSINESS FLOW (FOR CONNECTIONS)
+
+The `business_flow` edges show how components connect. They are displayed as arrows in the visualization.
+
+**Rules:**
+- `from_component` = the caller/requester
+- `to_component` = the callee/provider
+- Every component should appear in at least one edge
+- Labels describe the relationship (e.g., "calls", "uses", "processes")
+
+**Note:** Layout position is determined by `layer_order` + `architecture_layer`, NOT by business_flow edges.
+Business_flow only draws the connecting arrows between components.
 """
 
 
@@ -134,7 +148,10 @@ def build_orchestration_user_prompt(workspace_id: str) -> str:
 
 Start by calling `list_directory_components` to understand the codebase structure.
 
-Then produce your JSON analysis with component names that reflect the actual directory/module structure you discover."""
+Then produce your JSON analysis with:
+1. A `layer_order` that defines the visual hierarchy for this project type
+2. Components with `architecture_layer` matching one of your defined layers
+3. `business_flow` edges showing how components connect"""
 
 
 __all__ = ["build_orchestration_system_prompt", "build_orchestration_user_prompt"]

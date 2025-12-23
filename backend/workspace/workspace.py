@@ -61,16 +61,20 @@ class Workspace:
 
     @property
     def is_indexed(self) -> bool:
-        """Check if the workspace has been indexed (profiles exist in database)."""
+        """Check if the workspace has been indexed (profiles AND call graph exist)."""
         from structural_scaffolding.database import ProfileRecord, create_session
         from sqlalchemy import select
+        from tools.graph_cache import graph_exists
 
         session = create_session()
         try:
             stmt = select(ProfileRecord.id).where(ProfileRecord.workspace_id == self.workspace_id).limit(1)
-            return session.execute(stmt).first() is not None
+            has_profiles = session.execute(stmt).first() is not None
         finally:
             session.close()
+
+        # Must have both profiles AND call graph
+        return has_profiles and graph_exists(self.workspace_id)
 
     @property
     def has_source(self) -> bool:
