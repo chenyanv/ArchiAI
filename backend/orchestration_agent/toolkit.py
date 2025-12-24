@@ -10,10 +10,9 @@ from tools import (
     build_call_graph_pagerank_tool,
     build_extract_subgraph_tool,
     build_find_paths_tool,
-    build_get_node_details_tool,
     build_get_source_code_tool,
-    build_list_directory_components_tool,
 )
+from tools.list_directory_components import build_list_directory_components_tool
 
 
 def build_orchestration_tools(workspace_id: str, database_url: str | None = None) -> List[BaseTool]:
@@ -23,14 +22,13 @@ def build_orchestration_tools(workspace_id: str, database_url: str | None = None
     for understanding the overall architecture of a codebase.
     """
     return [
-        # Structure discovery - use this first to understand codebase layout
+        # Structure discovery
         build_list_directory_components_tool(workspace_id, database_url),
         # Node importance ranking
         build_call_graph_pagerank_tool(workspace_id, database_url),
         # Exploration tools
         build_extract_subgraph_tool(workspace_id, database_url),
         build_find_paths_tool(workspace_id, database_url),
-        build_get_node_details_tool(workspace_id, database_url),
         # Source code inspection
         build_get_source_code_tool(workspace_id, database_url),
     ]

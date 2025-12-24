@@ -27,10 +27,9 @@ Discovery tools:
 - `rank_call_graph_nodes(limit)` → returns globally important nodes by PageRank
 
 Exploration tools (require a node_id from discovery tools):
-- `extract_subgraph(anchor_node_id, max_depth)` → get surrounding nodes
+- `extract_subgraph(anchor_node_id, max_depth)` → get surrounding nodes and their metadata
 - `get_source_code(node_id)` → read implementation
 - `find_paths(start_node_id, end_node_id)` → trace connections
-- `get_node_details(node_id)` → get metadata about a node
 
 # NAMING GUIDELINES
 

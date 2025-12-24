@@ -191,6 +191,7 @@ def _build_subgraph_payload(
             node_payload["function_name"] = summary.get("function_name")
             node_payload["class_name"] = summary.get("class_name")
             node_payload["line_range"] = f"{summary.get('start_line')}-{summary.get('end_line')}"
+            node_payload["has_source"] = True  # Can use get_source_code on this node
 
             # Include either docstring or inferred summary
             if "docstring" in summary:
@@ -208,6 +209,7 @@ def _build_subgraph_payload(
             node_payload["file_path"] = attrs.get("file_path")
             node_payload["summary"] = f"{attrs.get('kind', 'unknown')} node (no profile record)"
             node_payload["summary_source"] = "graph_only"
+            node_payload["has_source"] = False  # Cannot use get_source_code - no profile record
 
         nodes.append(node_payload)
 

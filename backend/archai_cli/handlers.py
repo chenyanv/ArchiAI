@@ -7,7 +7,7 @@ from typing import Any, Callable, Dict, Optional
 
 from component_agent import NavigationNode
 from component_agent.toolkit import build_workspace_tools
-from tools import build_get_node_details_tool, build_get_source_code_tool
+from tools import build_get_source_code_tool
 
 
 def handle_inspect_source(
@@ -29,25 +29,6 @@ def handle_inspect_source(
     print(f"\n=== SOURCE: {header} ===")
     print(result.get("code", "<no code>"))
     print("=== END SOURCE ===")
-
-
-def handle_inspect_node(
-    target_id: Optional[str],
-    workspace_id: str,
-    database_url: Optional[str],
-    **_: Any,
-) -> None:
-    if not target_id:
-        print("No node_id provided for inspect_node.")
-        return
-    tool = build_get_node_details_tool(workspace_id, database_url)
-    try:
-        result = tool.invoke({"node_id": target_id})
-    except Exception as exc:
-        print(f"[ERROR] {exc}")
-        return
-    print("\n=== NODE DETAILS ===")
-    print(json.dumps(result, ensure_ascii=False, indent=2))
 
 
 def handle_inspect_tool(
@@ -95,8 +76,6 @@ def execute_action(node: NavigationNode, workspace_id: str, database_url: Option
 
     if kind == "inspect_source":
         handle_inspect_source(target_id, workspace_id, database_url)
-    elif kind == "inspect_node":
-        handle_inspect_node(target_id, workspace_id, database_url)
     elif kind == "inspect_tool":
         handle_inspect_tool(parameters, workspace_id, database_url)
     elif kind == "graph_overlay":
