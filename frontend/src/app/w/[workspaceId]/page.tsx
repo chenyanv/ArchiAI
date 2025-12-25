@@ -23,7 +23,7 @@ import {
 import {
   ArchitectureGraph,
   LoadingView,
-  DrilldownView,
+  DrilldownGraph,
   SourcePanel,
   StatCard,
 } from "@/components/workspace"
@@ -177,7 +177,13 @@ export default function WorkspacePage() {
     setLoadingNodeKey(node.node_key)
     setError(null)
 
-    if (node.action_kind === "inspect_source" && node.target_id) {
+    if (node.action_kind === "inspect_source") {
+      if (!node.target_id) {
+        // No target_id available - show error instead of silently failing
+        setError("Source code location not available for this node")
+        setLoadingNodeKey(null)
+        return
+      }
       setLoading(true)
       try {
         const result = await getNodeSource(node.target_id, workspaceId)
@@ -194,8 +200,17 @@ export default function WorkspacePage() {
         setLoadingNodeKey(null)
       }
     } else if (node.action_kind === "component_drilldown") {
-      const newBreadcrumbs = [...breadcrumbs, { node_key: node.node_key, label: node.title }]
+      const newBreadcrumbs = [...breadcrumbs, {
+        node_key: node.node_key,
+        title: node.title,
+        node_type: node.node_type,
+        target_id: node.target_id,
+      }]
       await executeDrilldown(componentCard, newBreadcrumbs)
+    } else {
+      // Unknown action kind
+      setError(`Unknown action: ${node.action_kind}`)
+      setLoadingNodeKey(null)
     }
   }, [workspaceId, executeDrilldown])
 
@@ -306,7 +321,7 @@ export default function WorkspacePage() {
                 loadingId={loadingNodeKey}
               />
             ) : currentEntry?.type === "drilldown" ? (
-              <DrilldownView
+              <DrilldownGraph
                 key={`drilldown-${history.length}`}
                 response={currentEntry.response}
                 componentCard={currentEntry.componentCard}

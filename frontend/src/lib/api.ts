@@ -70,7 +70,10 @@ export async function getOverview(workspaceId: string) {
 // Navigation types
 export interface NavigationBreadcrumb {
   node_key: string
-  label: string
+  title: string
+  node_type: string
+  target_id?: string
+  metadata?: Record<string, unknown>
 }
 
 export interface NavigationNode {

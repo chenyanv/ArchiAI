@@ -1,5 +1,5 @@
 export { ArchitectureGraph } from "./architecture-graph"
 export { LoadingView } from "./loading-view"
-export { DrilldownView } from "./drilldown-view"
+export { DrilldownGraph } from "./drilldown-graph"
 export { SourcePanel } from "./source-panel"
 export { StatCard } from "./stat-card"
