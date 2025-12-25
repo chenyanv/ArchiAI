@@ -7,24 +7,33 @@ from typing import Dict, List, Sequence
 from langchain_core.tools import BaseTool
 
 from tools import (
+    build_analyze_inheritance_graph_tool,
     build_call_graph_pagerank_tool,
     build_extract_subgraph_tool,
     build_find_paths_tool,
     build_get_source_code_tool,
     build_list_core_models_tool,
     build_list_entry_point_tool,
+    build_scan_files_tool,
+    build_search_codebase_tool,
 )
 
 
 def build_workspace_tools(workspace_id: str, database_url: str | None = None) -> List[BaseTool]:
     """Create all tools bound to a specific workspace."""
     return [
+        # Graph exploration
         build_extract_subgraph_tool(workspace_id, database_url),
         build_get_source_code_tool(workspace_id, database_url),
         build_find_paths_tool(workspace_id, database_url),
         build_call_graph_pagerank_tool(workspace_id, database_url),
+        build_analyze_inheritance_graph_tool(workspace_id, database_url),
+        # Discovery
         build_list_entry_point_tool(workspace_id, database_url),
         build_list_core_models_tool(workspace_id, database_url),
+        # File system exploration (assets not in call graph)
+        build_scan_files_tool(workspace_id, database_url),
+        build_search_codebase_tool(workspace_id, database_url),
     ]
 
 

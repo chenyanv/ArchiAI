@@ -59,6 +59,41 @@ def _should_continue(state: ComponentAgentState) -> str:
     return "end"
 
 
+def _build_phase2_state_injection(called_tools: List[str]) -> str:
+    """Build PHASE 2 (DRILL) state injection message after tools complete.
+
+    This tells the stateless LLM:
+    - Scout phase (PHASE 1) is now complete
+    - Which tools were called and what they revealed
+    - It should now proceed to PHASE 2 (Drill) to analyze results
+    """
+    tools_str = ", ".join(called_tools)
+    return f"""# PROGRESS STATE (Phase 1 → Phase 2 Transition)
+
+**STEP 1 (SCOUT) IS NOW COMPLETE.**
+
+Tools called: {tools_str}
+
+The tool(s) above have provided structured data about the component's structure, dependencies, and patterns. You now have concrete evidence to work with.
+
+---
+
+**NOW PROCEED TO STEP 2 (DRILL)**
+
+You are now in PHASE 2. Your job is to:
+
+1. **Analyze the tool results** above carefully. What do they tell you about the component's design pattern?
+2. **Form insights** about the component's role, key classes/functions, and how it connects to other parts
+3. **Generate the ComponentDrilldownResponse** with properly identified nodes at the next layer
+
+**CRITICAL**: Do not call tools again. You now have all the data you need. Synthesize it into the output structure with:
+- component_id: The component identifier
+- next_layer.nodes: An array of child nodes (functions, classes, modules, or workflows within this component)
+- Each node should have: id, label, kind (function/class/module/workflow), description
+
+**DO NOT fabricate node IDs.** Only use information from the tool results above."""
+
+
 class InstrumentedToolNode:
     def __init__(
         self,
@@ -76,6 +111,7 @@ class InstrumentedToolNode:
         outputs: List[ToolMessage] = []
         last = state["messages"][-1]
         tool_calls = getattr(last, "tool_calls", None) or []
+        called_tools: List[str] = []
 
         for tool_call in tool_calls:
             name = tool_call.get("name")
@@ -102,6 +138,13 @@ class InstrumentedToolNode:
                     tool_call_id=tool_call.get("id"),
                 )
             )
+            called_tools.append(name)
+
+        # Inject PHASE 2 (DRILL) state after tools complete
+        if called_tools:
+            phase2_injection = _build_phase2_state_injection(called_tools)
+            outputs.append(SystemMessage(content=phase2_injection))
+
         return {"messages": outputs}
 
 
