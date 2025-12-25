@@ -2,10 +2,14 @@
 
 import asyncio
 import json
+import os
 import queue
 import re
 import threading
 from typing import Any, AsyncGenerator, Callable, Dict, List, Optional, Tuple, TypeVar
+
+# Enable raw log output with DEBUG=true environment variable
+RAW_LOG_MODE = os.getenv("DEBUG", "").lower() in ("true", "1", "yes")
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
@@ -105,8 +109,15 @@ def _sse_event(status: str, message: str = "", data: Optional[Dict] = None) -> s
     return f"data: {json.dumps(payload)}\n\n"
 
 
-def _parse_log_message(log: str) -> Optional[str]:
-    """Parse agent log into user-friendly message. Returns None if not displayable."""
+def _parse_log_message(log: str, raw_mode: bool = False) -> Optional[str]:
+    """Parse agent log into user-friendly message. Returns None if not displayable.
+
+    If raw_mode=True, prints all logs to stdout for debugging.
+    """
+    # Always print raw logs in debug mode
+    if raw_mode:
+        print(f"[RAW] {log}", flush=True)
+
     if log.startswith("[tool:start]"):
         match = re.match(r"\[tool:start\] (\w+)", log)
         return f"Calling {match.group(1)}..." if match else None
@@ -175,7 +186,7 @@ async def _stream_agent_logs(
             log = log_queue.get(timeout=0.1)
             if log is None:
                 break
-            message = _parse_log_message(log)
+            message = _parse_log_message(log, raw_mode=RAW_LOG_MODE)
             if message and message != last_message:
                 last_message = message
                 yield (_sse_event(status, message), None, None)
@@ -338,8 +349,10 @@ def _build_drilldown_request(
         breadcrumbs=[
             NavigationBreadcrumb(
                 node_key=b.get("node_key", ""),
-                title=b.get("label", ""),
-                node_type="",
+                title=b.get("title", b.get("label", "")),  # Support both "title" and "label" for backwards compat
+                node_type=b.get("node_type", ""),
+                target_id=b.get("target_id"),
+                metadata=b.get("metadata", {}),
             )
             for b in breadcrumbs
         ],

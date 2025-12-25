@@ -67,7 +67,10 @@ After gathering sufficient intelligence, produce your analysis as JSON:
       "directory": "the/directory/path",
       "business_signal": "What capability this provides",
       "architecture_layer": "core-engine",
-      "leading_landmarks": [{"node_id": "...", "symbol": "...", "summary": "..."}],
+      "leading_landmarks": [
+        {"node_id": "python::file::the/main/file.py", "symbol": "main_file.py", "summary": "Primary implementation"},
+        {"node_id": "python::the/other/file.py::MainClass", "symbol": "MainClass", "summary": "Core class"}
+      ],
       "objective": ["Investigation question 1", "Investigation question 2"],
       "confidence": "high|medium|low"
     }
@@ -86,6 +89,42 @@ After gathering sufficient intelligence, produce your analysis as JSON:
 - Tools return nodes with an `id` field
 - Use this `id` value as the `node_id` field in your output
 - This enables downstream agents to explore the code graph
+
+# LANDMARK SELECTION (CRITICAL)
+
+Each component needs **2-4 leading_landmarks** that serve as exploration starting points for downstream agents.
+
+**Granularity preference (best to worst):**
+1. ✅ **File-level nodes**: `python::file::path/to/module.py` - broadest coverage
+2. ✅ **Class-level nodes**: `python::path/to/module.py::ClassName` - good for single-class modules
+3. ❌ **Method-level nodes**: `python::path/to/module.py::Class::method` - too narrow, avoid unless it's the main entry point
+4. ❌ **Private symbols**: anything with `_prefix` - internal implementation details
+
+**Coverage rules:**
+- If a component has **multiple parallel implementations** (e.g., multiple parsers, multiple backends), include one landmark for each major implementation
+- If a component has **one main class**, use that class as the landmark
+- If a component is a **utility module** with many functions, use the file-level node
+
+**Examples:**
+```json
+// Component with parallel strategies (e.g., parsers, backends)
+"leading_landmarks": [
+  {"node_id": "python::file::parser/pdf_parser.py", "symbol": "pdf_parser.py", "summary": "Default PDF parsing"},
+  {"node_id": "python::file::parser/cloud_parser.py", "symbol": "cloud_parser.py", "summary": "Cloud API integration"}
+]
+
+// Component with one main class
+"leading_landmarks": [
+  {"node_id": "python::agent/orchestrator.py::Orchestrator", "symbol": "Orchestrator", "summary": "Main agent loop"}
+]
+
+// Utility component
+"leading_landmarks": [
+  {"node_id": "python::file::utils/helpers.py", "symbol": "helpers.py", "summary": "Common utilities"}
+]
+```
+
+**Why this matters:** Downstream agents use landmarks as starting points for `extract_subgraph`. A narrow method-level landmark leads to a biased, incomplete exploration. File-level or class-level landmarks ensure comprehensive coverage.
 
 # ARCHITECTURE LAYERS (CRITICAL FOR LAYOUT)
 

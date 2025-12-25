@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import sys
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Sequence, Set
 
 import networkx as nx
+
+# Python 3.10+ stdlib module names (frozen set for fast lookup)
+_STDLIB_MODULE_NAMES: frozenset[str] = frozenset(sys.stdlib_module_names)
 
 from structural_scaffolding.models import CallSite, ImportSite, InheritanceRef, Profile, UseSite
 from structural_scaffolding.parsing import sanitize_call_name
@@ -806,8 +810,24 @@ def _is_noisy_call(call: str) -> bool:
     return False
 
 
+def _is_stdlib_call(call: str) -> bool:
+    """Check if call is to a Python standard library module.
+
+    Uses sys.stdlib_module_names (Python 3.10+) for accurate detection.
+    Examples: json.dumps, os.path.join, asyncio.run
+    """
+    # Extract the top-level module name
+    # "json.dumps" -> "json", "os.path.join" -> "os", "asyncio::run" -> "asyncio"
+    module = call.split(".")[0].split("::")[0]
+    return module in _STDLIB_MODULE_NAMES
+
+
 def _is_noisy_external_call(call: str) -> bool:
-    return _is_noisy_call(call) or _is_dunder_name(call)
+    """Check if external call should be filtered out.
+
+    Filters: stdlib calls, third-party libs, noisy patterns, dunder methods.
+    """
+    return _is_noisy_call(call) or _is_dunder_name(call) or _is_stdlib_call(call)
 
 
 def _call_token(call: str) -> str:

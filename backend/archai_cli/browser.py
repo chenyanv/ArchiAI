@@ -24,13 +24,14 @@ from .handlers import execute_action
 # =============================================================================
 
 TOOL_DESCRIPTIONS = {
-    "find_paths": "Finding execution paths",
+    "extract_subgraph": "Exploring subgraph",
     "get_source_code": "Reading source code",
-    "get_call_graph_context": "Analyzing call graph",
-    "get_neighbors": "Finding neighbors",
-    "get_node_details": "Getting node details",
+    "find_paths": "Finding execution paths",
+    "call_graph_pagerank": "Ranking node importance",
     "list_entry_point": "Listing entry points",
     "list_core_models": "Listing core models",
+    "scan_files": "Scanning for assets",
+    "search_codebase": "Searching codebase",
 }
 
 
