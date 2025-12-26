@@ -4,8 +4,12 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from typing_extensions import Literal
+
+
+# Node types that support component_drilldown action (can be drilled into)
+DRILLABLE_NODE_TYPES = {"class", "workflow", "service", "category", "capability"}
 
 
 NavigationActionKind = Literal[
@@ -107,6 +111,25 @@ class NavigationNode(BaseModel):
         default=None,
         description="Position in workflow sequence (0-indexed). None if not part of a sequential flow.",
     )
+
+    @field_validator("action")
+    @classmethod
+    def validate_action_kind(cls, action: NavigationAction, info) -> NavigationAction:
+        """Enforce that action.kind matches node_type drillability requirements."""
+        node_type = info.data.get("node_type")
+        if node_type in DRILLABLE_NODE_TYPES:
+            if action.kind != "component_drilldown":
+                raise ValueError(
+                    f"node_type='{node_type}' must have action.kind='component_drilldown', "
+                    f"got '{action.kind}'"
+                )
+        else:
+            if action.kind != "inspect_source":
+                raise ValueError(
+                    f"node_type='{node_type}' must have action.kind='inspect_source', "
+                    f"got '{action.kind}'"
+                )
+        return action
 
 
 class NextLayerView(BaseModel):
@@ -211,6 +234,7 @@ def coerce_subagent_payload(component_card: Mapping[str, Any]) -> Optional[Dict[
 
 
 __all__ = [
+    "DRILLABLE_NODE_TYPES",
     "NavigationActionKind",
     "NavigationNodeType",
     "EvidenceSourceType",

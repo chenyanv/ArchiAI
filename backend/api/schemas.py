@@ -49,9 +49,17 @@ class WorkspaceOverviewResponse(BaseModel):
 
 class DrilldownRequest(BaseModel):
     breadcrumbs: List[Dict[str, Any]] = Field(default_factory=list)
+    cache_id: Optional[str] = Field(
+        default=None,
+        description="Cache ID for loaded breadcrumbs (if continuing drilldown)"
+    )
     component_card: Optional[Dict[str, Any]] = Field(
         default=None,
         description="Component card from orchestration (required for first drilldown)"
+    )
+    clicked_node: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Node that user clicked on for drilldown (adds to breadcrumb trail)"
     )
 
 
@@ -62,6 +70,7 @@ class NavigationNodeDTO(BaseModel):
     description: str
     action_kind: str
     target_id: Optional[str] = None
+    action_parameters: Optional[Dict[str, Any]] = None
     sequence_order: Optional[int] = None
 
 
@@ -72,7 +81,7 @@ class DrilldownResponse(BaseModel):
     rationale: str
     is_sequential: bool
     nodes: List[NavigationNodeDTO]
-    breadcrumbs: List[Dict[str, Any]]
+    cache_id: str  # Breadcrumb cache ID for next drilldown
 
 
 # === Source Code ===

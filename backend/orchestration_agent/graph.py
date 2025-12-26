@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
@@ -12,6 +13,8 @@ from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 from typing_extensions import Annotated, TypedDict
+
+from llm_logger import get_llm_logger
 
 from .llm import build_orchestration_chat_model
 from .prompt import build_orchestration_system_prompt, build_orchestration_user_prompt
@@ -178,6 +181,9 @@ def run_orchestration_agent(
     logger: Optional[LogFn] = None,
 ) -> Dict[str, Any]:
     """Execute the orchestration agent and return the architecture analysis."""
+    # Get logger instance for file-based logging
+    llm_logger = get_llm_logger()
+
     toolset = list(tools) if tools else build_orchestration_tools(workspace_id, database_url)
 
     graph = build_orchestration_graph(toolset, temperature=temperature, logger=logger, debug=debug)
@@ -190,7 +196,41 @@ def run_orchestration_agent(
     if debug and logger:
         logger("[orchestration] Starting ReAct loop...")
 
+    # === Log orchestration agent invocation ===
+    # Helper function to serialize messages for logging
+    def _serialise_for_log(messages: List[BaseMessage]) -> List[Dict[str, Any]]:
+        serialised = []
+        for index, message in enumerate(messages, start=1):
+            entry: Dict[str, Any] = {
+                "index": index,
+                "type": message.__class__.__name__,
+                "content": _coerce_text(getattr(message, "content", "")),
+            }
+            if isinstance(message, AIMessage):
+                tool_calls = getattr(message, "tool_calls", None)
+                if tool_calls:
+                    entry["tool_calls"] = tool_calls
+            serialised.append(entry)
+        return serialised
+
+    serialized_messages = _serialise_for_log(initial_messages)
+    llm_logger.log_invocation(
+        label="[ORCHESTRATION_AGENT]",
+        messages=serialized_messages,
+        workspace_id=workspace_id,
+    )
+
+    orchestration_start_time = time.time()
     final_state = graph.invoke({"messages": initial_messages}, {"recursion_limit": 50})
+    orchestration_duration_ms = (time.time() - orchestration_start_time) * 1000
+
+    # Log orchestration response
+    final_response = final_state["messages"][-1] if final_state["messages"] else None
+    llm_logger.log_response(
+        label="[ORCHESTRATION_AGENT]",
+        response=final_response,
+        duration_ms=orchestration_duration_ms,
+    )
 
     if debug and logger:
         logger(f"[orchestration] ReAct loop completed with {len(final_state['messages'])} messages")

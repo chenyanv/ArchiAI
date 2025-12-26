@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import time
+from enum import Enum
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence
 
 from langchain_core.language_models import BaseChatModel
@@ -11,6 +13,8 @@ from langchain_core.tools import BaseTool
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
 from typing_extensions import Annotated, TypedDict
+
+from llm_logger import get_llm_logger
 
 from .llm import build_component_chat_model
 from .prompt import build_component_system_prompt, format_component_request
@@ -22,6 +26,15 @@ from .toolkit import build_workspace_tools
 LogFn = Callable[[str], None]
 ToolLogFn = Callable[[str, Dict[str, Any], Any], None]
 LLMContextLogger = Callable[[List[Dict[str, Any]]], None]
+
+
+class Phase(str, Enum):
+    """Explicit phase constants for Scout-Drill workflow.
+
+    This allows code and prompts to refer to phases by a single, authoritative source.
+    """
+    SCOUT = "scout"  # Phase 1: Pattern recognition and tool calling
+    DRILL = "drill"  # Phase 2: Synthesis and output generation
 
 
 class ComponentAgentState(TypedDict):
@@ -59,42 +72,14 @@ def _should_continue(state: ComponentAgentState) -> str:
     return "end"
 
 
-def _build_phase2_state_injection(called_tools: List[str]) -> str:
-    """Build PHASE 2 (DRILL) state injection message after tools complete.
-
-    This tells the stateless LLM:
-    - Scout phase (PHASE 1) is now complete
-    - Which tools were called and what they revealed
-    - It should now proceed to PHASE 2 (Drill) to analyze results
-    """
-    tools_str = ", ".join(called_tools)
-    return f"""# PROGRESS STATE (Phase 1 → Phase 2 Transition)
-
-**STEP 1 (SCOUT) IS NOW COMPLETE.**
-
-Tools called: {tools_str}
-
-The tool(s) above have provided structured data about the component's structure, dependencies, and patterns. You now have concrete evidence to work with.
-
----
-
-**NOW PROCEED TO STEP 2 (DRILL)**
-
-You are now in PHASE 2. Your job is to:
-
-1. **Analyze the tool results** above carefully. What do they tell you about the component's design pattern?
-2. **Form insights** about the component's role, key classes/functions, and how it connects to other parts
-3. **Generate the ComponentDrilldownResponse** with properly identified nodes at the next layer
-
-**CRITICAL**: Do not call tools again. You now have all the data you need. Synthesize it into the output structure with:
-- component_id: The component identifier
-- next_layer.nodes: An array of child nodes (functions, classes, modules, or workflows within this component)
-- Each node should have: id, label, kind (function/class/module/workflow), description
-
-**DO NOT fabricate node IDs.** Only use information from the tool results above."""
 
 
 class InstrumentedToolNode:
+    """Executes tool calls from LLM and returns results via ToolMessage.
+
+    Properly maintains message stack protocol: ToolMessage always follows
+    the AIMessage that requested the tool call.
+    """
     def __init__(
         self,
         tools: Sequence[BaseTool],
@@ -111,7 +96,6 @@ class InstrumentedToolNode:
         outputs: List[ToolMessage] = []
         last = state["messages"][-1]
         tool_calls = getattr(last, "tool_calls", None) or []
-        called_tools: List[str] = []
 
         for tool_call in tool_calls:
             name = tool_call.get("name")
@@ -138,12 +122,6 @@ class InstrumentedToolNode:
                     tool_call_id=tool_call.get("id"),
                 )
             )
-            called_tools.append(name)
-
-        # Inject PHASE 2 (DRILL) state after tools complete
-        if called_tools:
-            phase2_injection = _build_phase2_state_injection(called_tools)
-            outputs.append(SystemMessage(content=phase2_injection))
 
         return {"messages": outputs}
 
@@ -240,6 +218,113 @@ def _serialise_messages_for_log(
     return serialised
 
 
+def _extract_pattern_from_scout_output(scout_message: AIMessage) -> Optional[Dict[str, Any]]:
+    """Extract and validate pattern identification from Scout's final AI message.
+
+    Scout should output a JSON structure containing scout_pattern_identification.
+    This function:
+    1. Extracts JSON from Scout's message content
+    2. Validates required fields
+    3. Validates pattern_type is A, B, or C
+    4. Returns validated pattern data or None
+
+    Returns:
+        Dict with validated pattern_type, confidence, reasoning, etc., or None if invalid.
+    """
+    try:
+        content = _coerce_text(scout_message.content)
+
+        if not content or len(content) < 50:
+            # Content too short to contain valid JSON
+            return None
+
+        # Look for the scout_pattern_identification JSON block
+        # It may be embedded in the message text
+        start_idx = content.find('"scout_pattern_identification"')
+        if start_idx == -1:
+            # Try looking for JSON object marker
+            start_idx = content.find('{')
+            if start_idx == -1:
+                return None
+
+        # Find the matching closing brace
+        brace_count = 0
+        in_string = False
+        escape_next = False
+        end_idx = start_idx
+
+        for i in range(start_idx, len(content)):
+            char = content[i]
+
+            if escape_next:
+                escape_next = False
+                continue
+
+            if char == '\\':
+                escape_next = True
+                continue
+
+            if char == '"' and (i == 0 or content[i-1] != '\\'):
+                in_string = not in_string
+                continue
+
+            if not in_string:
+                if char == '{':
+                    brace_count += 1
+                elif char == '}':
+                    brace_count -= 1
+                    if brace_count == 0:
+                        end_idx = i + 1
+                        break
+
+        if brace_count != 0:
+            return None
+
+        json_str = content[start_idx:end_idx]
+        parsed = json.loads(json_str)
+
+        # Extract the pattern_identification structure
+        pattern_data = parsed.get("scout_pattern_identification")
+        if not pattern_data:
+            # If the JSON is the pattern_identification itself
+            if "pattern_type" in parsed:
+                pattern_data = parsed
+            else:
+                return None
+
+        # Validate required fields
+        if not isinstance(pattern_data, dict):
+            return None
+
+        pattern_type = pattern_data.get("pattern_type")
+        confidence = pattern_data.get("confidence")
+        reasoning = pattern_data.get("reasoning")
+        tools_called = pattern_data.get("tools_called")
+
+        # Validate pattern_type is A, B, or C
+        if pattern_type not in ("A", "B", "C"):
+            return None
+
+        # Validate confidence is a number between 0 and 1
+        if not isinstance(confidence, (int, float)) or not (0 <= confidence <= 1):
+            return None
+
+        # Validate reasoning is a string
+        if not isinstance(reasoning, str) or not reasoning.strip():
+            return None
+
+        # Validate tools_called is a list
+        if not isinstance(tools_called, list) or len(tools_called) == 0:
+            return None
+
+        # All validations passed - return the validated pattern data
+        return pattern_data
+
+    except (json.JSONDecodeError, ValueError, IndexError, TypeError):
+        # Pattern extraction failed, will use generic Drill prompt
+        return None
+
+
 def run_component_agent(
     request: ComponentDrilldownRequest,
     *,
@@ -252,7 +337,17 @@ def run_component_agent(
     log_llm_input: Optional[LLMContextLogger] = None,
     token_tracker: Optional[TokenTracker] = None,
 ) -> ComponentDrilldownResponse:
-    """Execute the sub-agent and return a structured drilldown response."""
+    """Execute the component analysis agent with proper ReAct architecture.
+
+    Both Scout and Drill phases operate as autonomous ReAct agents:
+    - Scout: Analyzes component and calls tools autonomously to gather evidence
+    - Drill: Reasons through Scout findings and synthesizes structured response
+
+    No explicit phase injection or fake messages needed - proper message stack protocol.
+    """
+
+    # Get logger instance for file-based logging
+    llm_logger = get_llm_logger()
 
     # Build tools dynamically for the workspace if not provided
     toolset = list(tools) if tools else build_workspace_tools(request.workspace_id, request.database_url)
@@ -264,22 +359,108 @@ def run_component_agent(
         tool_logger=log_tool_usage,
         llm_context_logger=log_llm_input,
     )
-    system_message = SystemMessage(content=build_component_system_prompt())
-    human_message = HumanMessage(
+
+    # === PHASE 1: SCOUT - Autonomous pattern analysis with tool exploration ===
+    if debug and logger:
+        logger("[scout:phase:start] Beginning SCOUT phase - autonomous pattern analysis")
+
+    # Determine focus node type for context-aware Scout strategy
+    focus_node_type = None
+    if request.breadcrumbs:
+        # If we have breadcrumbs, we're drilling into a specific node
+        # Get the type of the deepest (current) node
+        current_focus = request.breadcrumbs[-1]
+        focus_node_type = current_focus.node_type
+        if debug and logger:
+            logger(f"[scout:focus] Drilling into {focus_node_type} node: {current_focus.title}")
+
+    scout_system_message = SystemMessage(
+        content=build_component_system_prompt(phase=Phase.SCOUT.value, focus_node_type=focus_node_type)
+    )
+    scout_human_message = HumanMessage(
         content=format_component_request(request)
     )
 
-    # Run the ReAct loop to gather tool information
-    messages: List[BaseMessage] = [system_message, human_message]
-    final_state = graph.invoke({"messages": messages})
+    # Log initial state for PHASE 1
+    scout_messages: List[BaseMessage] = [scout_system_message, scout_human_message]
+    serialized_scout_messages = _serialise_messages_for_log(scout_messages)
 
-    # Track tokens from ReAct loop messages
+    # Log the Scout phase invocation with context
+    llm_logger.log_invocation(
+        label="[COMPONENT_AGENT_SCOUT]",
+        messages=serialized_scout_messages,
+        workspace_id=request.workspace_id,
+        cache_id=getattr(request, "cache_id", None),
+        breadcrumbs=list(request.breadcrumbs) if request.breadcrumbs else None,
+    )
+
+    # Run the ReAct loop - Scout is autonomous, calls tools as needed
+    scout_start_time = time.time()
+    scout_final_state = graph.invoke({"messages": scout_messages})
+    scout_duration_ms = (time.time() - scout_start_time) * 1000
+
+    # Log Scout phase completion
+    scout_final_serialized = _serialise_messages_for_log(scout_final_state["messages"])
+    scout_last_message = scout_final_state["messages"][-1] if scout_final_state["messages"] else None
+    llm_logger.log_response(
+        label="[COMPONENT_AGENT_SCOUT]",
+        response=scout_last_message,
+        duration_ms=scout_duration_ms,
+    )
+
+    # Track tokens from Scout's ReAct loop
     if token_tracker:
-        token_tracker.track_messages(final_state["messages"])
+        token_tracker.track_messages(scout_final_state["messages"])
+
+    if debug and logger:
+        logger("[scout:phase:end] Scout phase completed")
+        scout_content_preview = _coerce_text(scout_last_message.content)[:300] if scout_last_message else ""
+        logger(f"[scout:output:preview] {scout_content_preview}...")
+
+    # === PHASE 2: DRILL - Autonomous synthesis from Scout findings ===
+    if debug and logger:
+        logger("[drill:phase:start] Beginning DRILL phase - autonomous synthesis")
+
+    # Determine which Drill prompt to use based on Scout's findings
+    # (This is pattern routing, but discovery-based not code-driven)
+    pattern_type = None
+    pattern_data = None
+
+    if isinstance(scout_last_message, AIMessage):
+        pattern_data = _extract_pattern_from_scout_output(scout_last_message)
+        if pattern_data:
+            pattern_type = pattern_data.get("pattern_type")
+            if debug and logger:
+                confidence = pattern_data.get("confidence", "?")
+                logger(f"[drill:pattern:identified] Pattern: {pattern_type} (confidence: {confidence})")
+        else:
+            if debug and logger:
+                logger("[drill:pattern:not-found] Using generic Drill prompt")
+
+    # Build Drill phase messages using Scout's complete conversation as context
+    # This eliminates need for fake messages - proper message stack
+    drill_system_message = SystemMessage(
+        content=build_component_system_prompt(phase=Phase.DRILL.value, pattern=pattern_type, focus_node_type=focus_node_type)
+    )
+
+    # Drill has access to Scout's conversation, but we must filter out Scout's system message
+    # to avoid "double personality" - two conflicting system instructions
+    # Keep: HumanMessage (component context), AIMessage (Scout's reasoning), ToolMessage (results)
+    # Remove: SystemMessage (Scout's old instructions would confuse Drill)
+    scout_context_messages = [
+        msg for msg in scout_final_state["messages"]
+        if not isinstance(msg, SystemMessage)  # Remove Scout's system prompt
+    ]
+
+    # Build Drill messages with clean history
+    drill_messages: List[BaseMessage] = [drill_system_message] + scout_context_messages
+
+    if debug and logger:
+        logger(f"[drill:context] Using Scout's {len(scout_context_messages)} context messages (filtered out SystemMessage)")
+        logger(f"[drill:context:structure] Drill System + {len(scout_context_messages)} Scout messages")
 
     # Use structured output to generate the final response
-    # This leverages Gemini's native JSON schema enforcement
-    # include_raw=True returns both the raw AIMessage (for token tracking) and parsed object
+    # Drill will synthesize based on Scout's findings
     model = build_component_chat_model(temperature=temperature)
     structured_model = model.with_structured_output(
         ComponentDrilldownResponse,
@@ -287,13 +468,33 @@ def run_component_agent(
         include_raw=True,
     )
 
+    # Log the Drill phase invocation
+    drill_serialized = _serialise_messages_for_log(drill_messages)
+    llm_logger.log_invocation(
+        label="[COMPONENT_AGENT_DRILL]",
+        messages=drill_serialized,
+        workspace_id=request.workspace_id,
+        cache_id=getattr(request, "cache_id", None),
+    )
+
+    # Run Drill synthesis
+    drill_start_time = time.time()
+    result = structured_model.invoke(drill_messages)
+    drill_duration_ms = (time.time() - drill_start_time) * 1000
+
     if debug and logger:
-        logger("[structured_output] Generating ComponentDrilldownResponse from conversation")
+        logger("[drill:synthesis:complete] Structured output generated")
 
-    result = structured_model.invoke(final_state["messages"])
-
-    # include_raw=True returns a dict with 'raw' (AIMessage) and 'parsed' (Pydantic object)
+    # Log Drill phase completion
     raw_message = result.get("raw")
+    llm_logger.log_response(
+        label="[COMPONENT_AGENT_DRILL]",
+        response=raw_message if raw_message else result,
+        duration_ms=drill_duration_ms,
+    )
+
+    # Extract parsed response
+    # include_raw=True returns a dict with 'raw' (AIMessage) and 'parsed' (Pydantic object)
     response: ComponentDrilldownResponse = result.get("parsed")
 
     if token_tracker and raw_message:
@@ -306,9 +507,9 @@ def run_component_agent(
         response.breadcrumbs = list(request.breadcrumbs)
 
     if debug and logger:
-        logger(f"[structured_output:success] Generated response with {len(response.next_layer.nodes)} nodes")
+        logger(f"[drill:phase:end] Generated response with {len(response.next_layer.nodes)} nodes")
 
     return response
 
 
-__all__ = ["build_component_agent", "run_component_agent"]
+__all__ = ["Phase", "build_component_agent", "run_component_agent"]
