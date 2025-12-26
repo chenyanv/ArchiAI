@@ -7,7 +7,9 @@ from typing import Any, Dict, List, Optional
 import networkx as nx
 from langchain_core.tools import BaseTool, tool
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 
+from structural_scaffolding.database import ProfileRecord, create_session
 from tools.graph_queries import get_graph, node_snapshot
 
 
@@ -25,8 +27,37 @@ class AnalyzeInheritanceGraphInput(BaseModel):
     )
 
 
+def _find_classes_in_scope_from_db(
+    workspace_id: str,
+    database_url: str | None,
+    scope_path: str
+) -> List[str]:
+    """Find all class ProfileRecords within the given scope.
+
+    This queries ProfileRecord directly (not the CallGraph) to ensure
+    we only return classes that have source code indexed in the database.
+    This prevents returning nodes that exist in the CallGraph but have
+    no source code available.
+    """
+    session = create_session(database_url)
+    try:
+        stmt = select(ProfileRecord).where(
+            ProfileRecord.workspace_id == workspace_id,
+            ProfileRecord.kind == "class",
+            ProfileRecord.file_path.contains(scope_path),
+        )
+        records = session.execute(stmt).scalars().all()
+        return [r.id for r in records]
+    finally:
+        session.close()
+
+
 def _find_classes_in_scope(graph: nx.MultiDiGraph, scope_path: str) -> List[str]:
-    """Find all class nodes within the given scope."""
+    """Find all class nodes within the given scope.
+
+    DEPRECATED: Use _find_classes_in_scope_from_db instead to ensure
+    we only return classes with source code available.
+    """
     classes = []
     for node_id, attrs in graph.nodes(data=True):
         file_path = attrs.get("file_path", "")
@@ -56,7 +87,7 @@ def _find_base_class_candidates(graph: nx.MultiDiGraph, classes: List[str]) -> D
     return inheritance_count
 
 
-def _get_implementations(graph: nx.MultiDiGraph, base_class_id: str) -> List[Dict[str, Any]]:
+def _get_implementations(graph: nx.MultiDiGraph, base_class_id: str, workspace_id: str | None = None, database_url: str | None = None) -> List[Dict[str, Any]]:
     """Find all classes that inherit from the given base class."""
     implementations = []
 
@@ -68,13 +99,13 @@ def _get_implementations(graph: nx.MultiDiGraph, base_class_id: str) -> List[Dic
         # Check if there's an INHERITS_FROM edge
         for attrs in edge_data.values() if isinstance(edge_data, dict) else [edge_data]:
             if isinstance(attrs, dict) and attrs.get("type") == "INHERITS_FROM":
-                implementations.append(node_snapshot(graph, predecessor))
+                implementations.append(node_snapshot(graph, predecessor, workspace_id, database_url))
                 break
 
     return implementations
 
 
-def _get_parents(graph: nx.MultiDiGraph, class_id: str) -> List[Dict[str, Any]]:
+def _get_parents(graph: nx.MultiDiGraph, class_id: str, workspace_id: str | None = None, database_url: str | None = None) -> List[Dict[str, Any]]:
     """Find all parent classes of the given class."""
     parents = []
 
@@ -86,7 +117,7 @@ def _get_parents(graph: nx.MultiDiGraph, class_id: str) -> List[Dict[str, Any]]:
         # Check if there's an INHERITS_FROM edge
         for attrs in edge_data.values() if isinstance(edge_data, dict) else [edge_data]:
             if isinstance(attrs, dict) and attrs.get("type") == "INHERITS_FROM":
-                parents.append(node_snapshot(graph, successor))
+                parents.append(node_snapshot(graph, successor, workspace_id, database_url))
                 break
 
     return parents
@@ -98,9 +129,16 @@ def _analyze_inheritance_scope(
     scope_path: str,
     target_class_name: Optional[str],
 ) -> Dict[str, Any]:
-    """Core analysis logic for inheritance patterns."""
+    """Core analysis logic for inheritance patterns.
+
+    KEY CHANGE: Now queries ProfileRecord directly to find classes in scope,
+    rather than relying on CallGraph. This ensures all returned classes have
+    source code indexed in the database, preventing 404 errors when frontend
+    tries to fetch source code.
+    """
     graph = get_graph(workspace_id, database_url)
-    classes_in_scope = _find_classes_in_scope(graph, scope_path)
+    # Use database query to find classes - guarantees all have source code
+    classes_in_scope = _find_classes_in_scope_from_db(workspace_id, database_url, scope_path)
 
     if not classes_in_scope:
         return {
@@ -122,13 +160,13 @@ def _analyze_inheritance_scope(
                 "error": f"Class '{target_class_name}' not found in scope '{scope_path}'",
             }
 
-        parents = _get_parents(graph, target_id)
+        parents = _get_parents(graph, target_id, workspace_id, database_url)
         return {
             "success": True,
             "mode": "explicit",
-            "target_class": node_snapshot(graph, target_id),
+            "target_class": node_snapshot(graph, target_id, workspace_id, database_url),
             "parents": parents,
-            "children": _get_implementations(graph, target_id),
+            "children": _get_implementations(graph, target_id, workspace_id, database_url),
         }
 
     # Auto-discover: find the most-inherited base class
@@ -143,16 +181,16 @@ def _analyze_inheritance_scope(
     dominant_base = max(inheritance_counts, key=inheritance_counts.get)
     count = inheritance_counts[dominant_base]
 
-    implementations = _get_implementations(graph, dominant_base)
+    implementations = _get_implementations(graph, dominant_base, workspace_id, database_url)
 
     return {
         "success": True,
         "mode": "auto-discover",
         "pattern_detected": "Plugin Architecture" if count >= 2 else "Class Hierarchy",
-        "dominant_base_class": node_snapshot(graph, dominant_base),
+        "dominant_base_class": node_snapshot(graph, dominant_base, workspace_id, database_url),
         "inheritance_depth": count,
         "implementations": implementations,
-        "parents": _get_parents(graph, dominant_base),
+        "parents": _get_parents(graph, dominant_base, workspace_id, database_url),
     }
 
 

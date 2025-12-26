@@ -22,15 +22,71 @@ def normalise_category(attrs: Mapping[str, Any]) -> str:
     return "unknown"
 
 
-def node_snapshot(graph: nx.MultiDiGraph, node_id: str) -> Dict[str, Any]:
-    attrs = graph.nodes[node_id]
-    return {
-        "id": node_id,
-        "label": attrs.get("label"),
-        "kind": attrs.get("kind"),
-        "category": normalise_category(attrs),
-        "file_path": attrs.get("file_path"),
-    }
+def node_snapshot(graph: nx.MultiDiGraph, node_id: str, workspace_id: str | None = None, database_url: str | None = None) -> Dict[str, Any]:
+    """Create a snapshot of a node's metadata, including docstring/summary.
+
+    First tries to get data from the graph. If node not found in graph,
+    falls back to ProfileRecord to handle cases where node exists in database
+    but was filtered from the call graph.
+
+    Args:
+        graph: The call graph
+        node_id: The node ID to snapshot
+        workspace_id: Required if node might not be in graph (for ProfileRecord lookup)
+        database_url: Database URL for ProfileRecord lookup
+
+    Returns:
+        Dict with fields: id, label, kind, category, file_path, summary (optional)
+    """
+    # Try graph first
+    if node_id in graph.nodes:
+        attrs = graph.nodes[node_id]
+        snapshot = {
+            "id": node_id,
+            "label": attrs.get("label"),
+            "kind": attrs.get("kind"),
+            "category": normalise_category(attrs),
+            "file_path": attrs.get("file_path"),
+        }
+        # Include summary if available in graph attributes
+        summary = attrs.get("summary") or attrs.get("docstring")
+        if summary:
+            snapshot["summary"] = summary
+        return snapshot
+
+    # Fallback: try ProfileRecord if node not in graph
+    if workspace_id and database_url:
+        try:
+            from structural_scaffolding.database import ProfileRecord, create_session
+            from sqlalchemy import select
+
+            session = create_session(database_url)
+            try:
+                stmt = select(ProfileRecord).where(
+                    ProfileRecord.workspace_id == workspace_id,
+                    ProfileRecord.id == node_id,
+                )
+                record = session.execute(stmt).scalar_one_or_none()
+                if record:
+                    snapshot = {
+                        "id": node_id,
+                        "label": f"{record.class_name or ''}{':' if record.class_name and record.function_name else ''}{record.function_name or record.class_name or 'unknown'}",
+                        "kind": record.kind,
+                        "category": "implementation",  # Default category for ProfileRecord lookups
+                        "file_path": record.file_path,
+                    }
+                    # Include docstring from database as summary
+                    if record.docstring:
+                        snapshot["summary"] = record.docstring
+                    return snapshot
+            finally:
+                session.close()
+        except Exception:
+            # If ProfileRecord lookup fails, continue to raise KeyError
+            pass
+
+    # Node not found anywhere
+    raise KeyError(f"Node '{node_id}' not found in graph or database")
 
 
 def _match_value(value: Any, expected: Any) -> bool:
