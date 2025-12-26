@@ -18,7 +18,6 @@ import {
   type SSEEvent,
   type DrilldownResponse,
   type NavigationNode,
-  type NavigationBreadcrumb,
 } from "@/lib/api"
 import {
   ArchitectureGraph,
@@ -33,10 +32,12 @@ import {
 type HistoryEntry = {
   type: "root"
   rankedGroups: RankedGroup[]
+  cacheId?: string
 } | {
   type: "drilldown"
   response: DrilldownResponse
   componentCard: Component
+  cacheId: string  // Cache ID for this drilldown level
 }
 
 type AnalysisState = {
@@ -137,24 +138,24 @@ export default function WorkspacePage() {
   }, [error])
 
   // Shared drilldown execution
-  const executeDrilldown = useCallback(async (component: Component, breadcrumbs: NavigationBreadcrumb[]) => {
+  const executeDrilldown = useCallback(async (component: Component, cacheId?: string, clickedNode?: NavigationNode) => {
     setLoading(true)
     setDrilldownLoading(true)
     setDrilldownLogs([])
     setError(null)
 
     try {
-      await drilldownStream(workspaceId, component, breadcrumbs, (event) => {
+      await drilldownStream(workspaceId, component, cacheId, (event) => {
         if (event.status === "error") {
           setError(event.message)
           setDrilldownLoading(false)
         } else if (event.status === "done" && event.data) {
-          setHistory((prev) => [...prev, { type: "drilldown", response: event.data!, componentCard: component }])
+          setHistory((prev) => [...prev, { type: "drilldown", response: event.data!, componentCard: component, cacheId: event.data!.cache_id }])
           setDrilldownLoading(false)
         } else if (event.status === "thinking") {
           setDrilldownLogs((prev) => prev.includes(event.message) ? prev : [...prev, event.message])
         }
-      })
+      }, clickedNode)
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to drill down")
       setDrilldownLoading(false)
@@ -166,13 +167,13 @@ export default function WorkspacePage() {
 
   const handleComponentClick = useCallback(async (component: Component) => {
     setLoadingNodeKey(component.component_id)
-    await executeDrilldown(component, [])
+    await executeDrilldown(component)
   }, [executeDrilldown])
 
   const handleNodeClick = useCallback(async (
     node: NavigationNode,
     componentCard: Component,
-    breadcrumbs: NavigationBreadcrumb[]
+    currentCacheId: string
   ) => {
     setLoadingNodeKey(node.node_key)
     setError(null)
@@ -194,19 +195,20 @@ export default function WorkspacePage() {
           endLine: result.end_line,
         })
       } catch (e) {
-        setError(e instanceof Error ? e.message : "Failed to load source")
+        // Graceful error handling for missing source code
+        const errorMsg = e instanceof Error ? e.message : "Failed to load source"
+        if (errorMsg.includes("404") || errorMsg.includes("not found")) {
+          setError(`Source code not indexed for "${node.title}". This may be a private method or dynamically generated node.`)
+        } else {
+          setError(errorMsg)
+        }
       } finally {
         setLoading(false)
         setLoadingNodeKey(null)
       }
     } else if (node.action_kind === "component_drilldown") {
-      const newBreadcrumbs = [...breadcrumbs, {
-        node_key: node.node_key,
-        title: node.title,
-        node_type: node.node_type,
-        target_id: node.target_id,
-      }]
-      await executeDrilldown(componentCard, newBreadcrumbs)
+      // Pass current cache_id and clicked node - backend will load breadcrumbs from cache and append new node
+      await executeDrilldown(componentCard, currentCacheId, node)
     } else {
       // Unknown action kind
       setError(`Unknown action: ${node.action_kind}`)

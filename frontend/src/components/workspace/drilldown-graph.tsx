@@ -19,7 +19,7 @@ import {
 import "@xyflow/react/dist/style.css"
 import { motion } from "framer-motion"
 import { FileCode, FolderOpen, Box, Workflow, Database, Globe, Cpu, ChevronRight, Loader2, Search, Code2 } from "lucide-react"
-import { type NavigationNode, type DrilldownResponse, type Component, type NavigationBreadcrumb } from "@/lib/api"
+import { type NavigationNode, type DrilldownResponse, type Component } from "@/lib/api"
 
 // === Constants ===
 
@@ -228,7 +228,7 @@ const nodeTypes = { drilldown: DrilldownNode }
 interface Props {
   response: DrilldownResponse
   componentCard: Component
-  onNodeClick: (node: NavigationNode, componentCard: Component, breadcrumbs: NavigationBreadcrumb[]) => void
+  onNodeClick: (node: NavigationNode, componentCard: Component, cacheId: string) => void
   loadingId: string | null
 }
 
@@ -254,12 +254,12 @@ export function DrilldownGraph({ response, componentCard, onNodeClick, loadingId
   // Build graph
   useEffect(() => {
     const handleClick = (node: NavigationNode) => {
-      onNodeClick(node, componentCard, response.breadcrumbs)
+      onNodeClick(node, componentCard, response.cache_id)
     }
     const { nodes: n, edges: e } = buildGraph(visibleNodes, response.is_sequential, handleClick, loadingId)
     setNodes(n)
     setEdges(e)
-  }, [visibleNodes, response.is_sequential, response.breadcrumbs, componentCard, onNodeClick, loadingId, setNodes, setEdges])
+  }, [visibleNodes, response.is_sequential, response.cache_id, componentCard, onNodeClick, loadingId, setNodes, setEdges])
 
   // Calculate height based on actual node heights
   const height = useMemo(() => {

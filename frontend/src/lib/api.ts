@@ -83,6 +83,7 @@ export interface NavigationNode {
   description: string
   action_kind: "inspect_source" | "component_drilldown"
   target_id?: string
+  action_parameters?: Record<string, unknown>  // Virtual node context (e.g., paths for file groups)
   sequence_order?: number
 }
 
@@ -93,7 +94,7 @@ export interface DrilldownResponse {
   rationale: string
   is_sequential: boolean
   nodes: NavigationNode[]
-  breadcrumbs: NavigationBreadcrumb[]
+  cache_id: string  // Breadcrumb cache ID for next drilldown
 }
 
 export interface DrilldownSSEEvent {
@@ -109,14 +110,23 @@ export function getDrilldownStreamUrl(workspaceId: string): string {
 export async function drilldown(
   workspaceId: string,
   componentCard: Component,
-  breadcrumbs: NavigationBreadcrumb[] = []
+  cacheId?: string,
+  clickedNode?: NavigationNode
 ): Promise<DrilldownResponse> {
   const res = await fetch(`${API_BASE}/api/workspaces/${workspaceId}/drilldown`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       component_card: componentCard,
-      breadcrumbs,
+      cache_id: cacheId,
+      clicked_node: clickedNode ? {
+        node_key: clickedNode.node_key,
+        title: clickedNode.title,
+        node_type: clickedNode.node_type,
+        target_id: clickedNode.target_id,
+        action_parameters: clickedNode.action_parameters,
+      } : undefined,
+      breadcrumbs: [],  // Breadcrumbs loaded from cache_id on backend
     }),
   })
   if (!res.ok) {
@@ -129,15 +139,24 @@ export async function drilldown(
 export async function drilldownStream(
   workspaceId: string,
   componentCard: Component,
-  breadcrumbs: NavigationBreadcrumb[] = [],
-  onMessage: (event: DrilldownSSEEvent) => void
+  cacheId?: string,
+  onMessage?: (event: DrilldownSSEEvent) => void,
+  clickedNode?: NavigationNode
 ): Promise<void> {
   const res = await fetch(`${API_BASE}/api/workspaces/${workspaceId}/drilldown/stream`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       component_card: componentCard,
-      breadcrumbs,
+      cache_id: cacheId,
+      clicked_node: clickedNode ? {
+        node_key: clickedNode.node_key,
+        title: clickedNode.title,
+        node_type: clickedNode.node_type,
+        target_id: clickedNode.target_id,
+        action_parameters: clickedNode.action_parameters,
+      } : undefined,
+      breadcrumbs: [],  // Breadcrumbs loaded from cache_id on backend
     }),
   })
 
@@ -156,7 +175,7 @@ export async function drilldownStream(
     if (line.startsWith("data: ")) {
       try {
         const data = JSON.parse(line.slice(6))
-        onMessage(data)
+        onMessage?.(data)
       } catch {
         // ignore parse errors
       }

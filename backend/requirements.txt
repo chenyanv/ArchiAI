@@ -10,3 +10,4 @@ tree-sitter-languages>=1.8,<1.11
 networkx>=3.2,<4
 fastapi>=0.115,<1
 uvicorn[standard]>=0.32,<1
+redis>=5.0,<6
