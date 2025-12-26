@@ -20,6 +20,7 @@ from component_agent.schemas import (
     NavigationBreadcrumb,
     coerce_subagent_payload,
 )
+from drilldown_cache import BreadcrumbCache
 from orchestration_agent.graph import run_orchestration_agent
 from workspace import WorkspaceManager
 
@@ -341,29 +342,109 @@ async def get_overview(workspace_id: str):
 
 
 def _build_drilldown_request(
-    workspace_id: str, database_url: str, component_card: Dict, breadcrumbs: List[Dict]
-) -> ComponentDrilldownRequest:
-    """Build a ComponentDrilldownRequest from API inputs."""
-    return ComponentDrilldownRequest(
+    workspace_id: str, database_url: str, component_card: Dict, breadcrumbs: List[Dict], cache_id: Optional[str] = None, clicked_node: Optional[Dict] = None
+) -> Tuple[ComponentDrilldownRequest, str]:
+    """Build a ComponentDrilldownRequest from API inputs.
+
+    Returns (request, cache_id) tuple. If cache_id not provided, uses breadcrumbs list.
+    If cache_id provided, loads breadcrumbs from cache and returns potentially updated cache_id.
+    If clicked_node provided, appends it to breadcrumbs to track drilldown path.
+    """
+    # Load breadcrumbs from cache if cache_id provided
+    if cache_id:
+        loaded = BreadcrumbCache.load_breadcrumbs(workspace_id, cache_id)
+        if loaded is None:
+            raise ValueError(f"Cache {cache_id} not found or expired")
+        breadcrumbs = loaded
+
+    # If user clicked a node, add it to breadcrumbs to track drilldown depth
+    if clicked_node:
+        breadcrumbs = breadcrumbs + [{
+            "node_key": clicked_node.get("node_key", ""),
+            "title": clicked_node.get("title", ""),
+            "node_type": clicked_node.get("node_type", ""),
+            "target_id": clicked_node.get("target_id"),
+            "metadata": {"action_parameters": clicked_node.get("action_parameters")} if clicked_node.get("action_parameters") else {}
+        }]
+
+    # Convert dicts to NavigationBreadcrumb objects
+    breadcrumb_objects = [
+        NavigationBreadcrumb(
+            node_key=b.get("node_key", ""),
+            title=b.get("title", b.get("label", "")),  # Support both "title" and "label" for backwards compat
+            node_type=b.get("node_type", ""),
+            target_id=b.get("target_id"),
+            metadata=b.get("metadata", {}),
+        )
+        for b in breadcrumbs
+    ]
+
+    request = ComponentDrilldownRequest(
         component_card=component_card,
-        breadcrumbs=[
-            NavigationBreadcrumb(
-                node_key=b.get("node_key", ""),
-                title=b.get("title", b.get("label", "")),  # Support both "title" and "label" for backwards compat
-                node_type=b.get("node_type", ""),
-                target_id=b.get("target_id"),
-                metadata=b.get("metadata", {}),
-            )
-            for b in breadcrumbs
-        ],
+        breadcrumbs=breadcrumb_objects,
         subagent_payload=coerce_subagent_payload(component_card),
         workspace_id=workspace_id,
         database_url=database_url,
     )
 
+    # Save updated breadcrumbs to cache and return cache_id
+    current_cache_id = BreadcrumbCache.save_breadcrumbs(workspace_id, breadcrumbs)
+    return request, current_cache_id
 
-def _format_drilldown_response(response) -> Dict:
-    """Format component agent response as API dict."""
+
+def _validate_action_kind(action_kind: str, node_type: str) -> str:
+    """Pass through validated action_kind from component agent.
+
+    The NavigationNode schema validator (in component_agent/schemas.py)
+    enforces that action_kind matches node_type:
+    - Drillable types (class, workflow, etc.) → "component_drilldown"
+    - Non-drillable types → "inspect_source"
+    """
+    return action_kind
+
+
+def _validate_target_id(target_id: Optional[str], workspace_id: str, database_url: str | None) -> Optional[str]:
+    """Validate that target_id exists in the database before returning it.
+
+    If the node doesn't exist in ProfileRecord, return None to prevent 404 errors.
+    The frontend will then use component_drilldown instead of inspect_source.
+    """
+    if not target_id:
+        return None
+
+    try:
+        from structural_scaffolding.database import ProfileRecord, create_session
+        from sqlalchemy import select
+
+        session = create_session(database_url)
+        try:
+            exists = session.execute(
+                select(ProfileRecord).where(
+                    ProfileRecord.workspace_id == workspace_id,
+                    ProfileRecord.id == target_id,
+                )
+            ).scalar_one_or_none()
+            return target_id if exists else None
+        finally:
+            session.close()
+    except Exception:
+        # If validation fails, return None to be safe
+        return None
+
+
+def _format_drilldown_response(response, workspace_id: str, cache_id: str, database_url: str | None = None) -> Dict:
+    """Format component agent response as API dict.
+
+    Args:
+        response: Agent response
+        workspace_id: Workspace ID for cache storage
+        cache_id: Current cache ID for breadcrumbs
+        database_url: Database URL for validating target_ids
+    """
+    # Save agent's updated breadcrumbs to cache to get new cache_id for next drilldown
+    breadcrumb_dicts = [b.model_dump() for b in response.breadcrumbs]
+    new_cache_id = BreadcrumbCache.save_breadcrumbs(workspace_id, breadcrumb_dicts)
+
     return {
         "component_id": response.component_id,
         "agent_goal": response.agent_goal,
@@ -376,18 +457,19 @@ def _format_drilldown_response(response) -> Dict:
                 "title": n.title,
                 "node_type": n.node_type,
                 "description": n.description,
-                "action_kind": n.action.kind,
-                "target_id": n.action.target_id,
+                "action_kind": _validate_action_kind(n.action.kind, n.node_type),
+                "target_id": _validate_target_id(n.action.target_id, workspace_id, database_url),
+                "action_parameters": n.action.parameters,  # Preserve virtual node context
                 "sequence_order": n.sequence_order,
             }
             for n in response.next_layer.nodes
         ],
-        "breadcrumbs": [b.model_dump() for b in response.breadcrumbs],
+        "cache_id": new_cache_id,  # Return new cache_id for next drilldown
     }
 
 
 async def _stream_drilldown(
-    workspace_id: str, component_card: Dict, breadcrumbs: List[Dict]
+    workspace_id: str, component_card: Dict, breadcrumbs: List[Dict], cache_id: Optional[str] = None, clicked_node: Optional[Dict] = None
 ) -> AsyncGenerator[str, None]:
     """Generate SSE events for drilldown progress."""
     workspace = _get_workspace(workspace_id)
@@ -395,9 +477,13 @@ async def _stream_drilldown(
     yield _sse_event("thinking", "Analyzing component structure...")
     await asyncio.sleep(0)
 
-    drilldown_request = _build_drilldown_request(
-        workspace_id, workspace.database_url, component_card, breadcrumbs
-    )
+    try:
+        drilldown_request, cache_id = _build_drilldown_request(
+            workspace_id, workspace.database_url, component_card, breadcrumbs, cache_id, clicked_node
+        )
+    except ValueError as e:
+        yield _sse_event("error", f"Invalid cache: {e}")
+        return
 
     response = None
     async for event, result, error in _stream_agent_logs(
@@ -419,7 +505,7 @@ async def _stream_drilldown(
     yield _sse_event(
         "done",
         f"Found {len(response.next_layer.nodes)} nodes",
-        _format_drilldown_response(response),
+        _format_drilldown_response(response, workspace_id, cache_id, workspace.database_url),
     )
 
 
@@ -430,7 +516,7 @@ async def drilldown_stream(workspace_id: str, request: DrilldownRequest):
         raise HTTPException(status_code=400, detail="component_card required")
 
     return StreamingResponse(
-        _stream_drilldown(workspace_id, request.component_card, request.breadcrumbs),
+        _stream_drilldown(workspace_id, request.component_card, request.breadcrumbs, request.cache_id, request.clicked_node),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
     )
@@ -444,9 +530,12 @@ async def drilldown(workspace_id: str, request: DrilldownRequest):
     if not request.component_card:
         raise HTTPException(status_code=400, detail="component_card required")
 
-    drilldown_request = _build_drilldown_request(
-        workspace_id, workspace.database_url, request.component_card, request.breadcrumbs
-    )
+    try:
+        drilldown_request, cache_id = _build_drilldown_request(
+            workspace_id, workspace.database_url, request.component_card, request.breadcrumbs, request.cache_id, request.clicked_node
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid cache: {e}")
 
     try:
         loop = asyncio.get_event_loop()
@@ -456,7 +545,7 @@ async def drilldown(workspace_id: str, request: DrilldownRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Drilldown failed: {e}")
 
-    data = _format_drilldown_response(response)
+    data = _format_drilldown_response(response, workspace_id, cache_id, workspace.database_url)
     return DrilldownResponse(
         component_id=data["component_id"],
         agent_goal=data["agent_goal"],
@@ -464,5 +553,5 @@ async def drilldown(workspace_id: str, request: DrilldownRequest):
         rationale=data["rationale"],
         is_sequential=data["is_sequential"],
         nodes=[NavigationNodeDTO(**n) for n in data["nodes"]],
-        breadcrumbs=data["breadcrumbs"],
+        cache_id=data["cache_id"],
     )
