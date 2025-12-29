@@ -509,6 +509,11 @@ def run_component_agent(
     if debug and logger:
         logger(f"[drill:phase:end] Generated response with {len(response.next_layer.nodes)} nodes")
 
+    # TODO: Verify that LLM correctly populates semantic_metadata for each node when prompted.
+    # The Drill phase prompts (Pattern A/B/C and class-level) now include semantic extraction guidance.
+    # Monitor LLM responses to ensure semantic_metadata fields (semantic_role, business_context,
+    # flow_position, risk_level, impacted_workflows, business_narrative) are consistently populated.
+
     return response
 
 

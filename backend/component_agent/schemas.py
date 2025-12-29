@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from enum import Enum
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -48,6 +49,78 @@ EvidenceSourceType = Literal[
     "tool_result",
     "custom",
 ]
+
+
+# Semantic metadata enums for bridging code structure to business meaning
+
+
+class SemanticRole(str, Enum):
+    """Classification of what role this component plays in business workflows."""
+    GATEWAY = "gateway"
+    PROCESSOR = "processor"
+    SINK = "sink"
+    ORCHESTRATOR = "orchestrator"
+    VALIDATOR = "validator"
+    TRANSFORMER = "transformer"
+    AGGREGATOR = "aggregator"
+    DISPATCHER = "dispatcher"
+    ADAPTER = "adapter"
+    MEDIATOR = "mediator"
+    REPOSITORY = "repository"
+    FACTORY = "factory"
+    STRATEGY = "strategy"
+
+
+class BusinessFlowPosition(str, Enum):
+    """Position of this component within typical business data/control flows."""
+    ENTRY_POINT = "entry_point"
+    VALIDATION = "validation"
+    PROCESSING = "processing"
+    TRANSFORMATION = "transformation"
+    AGGREGATION = "aggregation"
+    STORAGE = "storage"
+    OUTPUT = "output"
+    ERROR_HANDLING = "error_handling"
+
+
+class RiskLevel(str, Enum):
+    """Business-relevant risk classification for this component."""
+    CRITICAL = "critical"
+    HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
+
+
+class SemanticMetadata(BaseModel):
+    """Business semantic information extracted from code structure and context."""
+    semantic_role: Optional[SemanticRole] = Field(
+        default=None,
+        description="What role this component plays in business workflows.",
+    )
+    business_context: Optional[str] = Field(
+        default=None,
+        description="1-2 sentences explaining what this component does in business terms.",
+    )
+    business_significance: Optional[str] = Field(
+        default=None,
+        description="Why this component matters to the business or system.",
+    )
+    flow_position: Optional[BusinessFlowPosition] = Field(
+        default=None,
+        description="Position of this component within typical business flows.",
+    )
+    risk_level: Optional[RiskLevel] = Field(
+        default=None,
+        description="Business-relevant risk classification.",
+    )
+    dependencies_description: Optional[str] = Field(
+        default=None,
+        description="Brief description of critical dependencies this component relies on.",
+    )
+    impacted_workflows: List[str] = Field(
+        default_factory=list,
+        description="List of business workflows that depend on or are affected by this component.",
+    )
 
 
 class EvidenceItem(BaseModel):
@@ -110,6 +183,14 @@ class NavigationNode(BaseModel):
     sequence_order: Optional[int] = Field(
         default=None,
         description="Position in workflow sequence (0-indexed). None if not part of a sequential flow.",
+    )
+    semantic_metadata: Optional[SemanticMetadata] = Field(
+        default=None,
+        description="Business semantic information about this node.",
+    )
+    business_narrative: Optional[str] = Field(
+        default=None,
+        description="Story-format narrative explaining this component's role in business context.",
     )
 
     @field_validator("action")
@@ -238,7 +319,11 @@ __all__ = [
     "NavigationActionKind",
     "NavigationNodeType",
     "EvidenceSourceType",
+    "SemanticRole",
+    "BusinessFlowPosition",
+    "RiskLevel",
     "EvidenceItem",
+    "SemanticMetadata",
     "NavigationAction",
     "NavigationNode",
     "NextLayerView",

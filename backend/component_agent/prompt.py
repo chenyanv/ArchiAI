@@ -69,6 +69,171 @@ Scout has completed structural analysis. You now have concrete findings to synth
 """
 
 
+def _build_semantic_extraction_guidance(pattern: str | None = None) -> str:
+    """Build guidance for extracting semantic metadata (business meaning) from code.
+
+    This section guides the LLM to extract and include semantic_metadata and
+    business_narrative for each node, bridging the gap between code structure
+    and business meaning.
+
+    Args:
+        pattern: Pattern identifier ('A', 'B', 'C') or None for class-level analysis.
+
+    Returns:
+        Formatted guidance section for semantic extraction.
+    """
+    if pattern == "A":
+        semantic_context = """
+## Semantic Metadata Extraction - Pattern A (Registry/Plugin Systems)
+
+For each node in the registry/plugin system:
+
+1. **semantic_role**: Choose from:
+   - `"factory"` - The registry/factory that creates plugin instances
+   - `"repository"` - Stores or manages plugin registrations
+   - `"gateway"` - Entry point for plugin access
+   - Other roles based on what each node does
+
+2. **business_context**: Explain what this node does in business terms (not technical).
+   - Registry: "Centralized management of parser implementations for different document formats"
+   - Plugin: "Handles PDF document parsing using vision/OCR technology"
+
+3. **business_significance**: Why is this important? What breaks if it fails?
+   - "Critical for document format detection and handling"
+   - "Failure would prevent vision-based document analysis"
+
+4. **flow_position**: Where does it fit in data flows?
+   - "ENTRY_POINT", "PROCESSING", "STORAGE", "OUTPUT", etc.
+
+5. **risk_level**: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW"
+   - Registry typically CRITICAL
+   - Each plugin's importance varies
+
+6. **impacted_workflows**: List business workflows that depend on this.
+   - ["document_ingestion", "document_analysis", "format_detection"]
+
+7. **business_narrative**: A story-format explanation of this node's role.
+   - "The VisionParser is a specialized plugin that handles complex document layouts using OCR technology, enabling vision-based content extraction."
+
+**INCLUDE these fields in each node's JSON output.**
+"""
+    elif pattern == "B":
+        semantic_context = """
+## Semantic Metadata Extraction - Pattern B (Workflow/Orchestration)
+
+For each orchestration/workflow node:
+
+1. **semantic_role**: Choose from:
+   - `"orchestrator"` - Coordinates overall flow
+   - `"processor"` - Processes data in the flow
+   - `"validator"` - Validates data
+   - `"transformer"` - Transforms data format
+   - Other roles as appropriate
+
+2. **business_context**: Explain the workflow in business terms.
+   - "Orchestrates document ingestion from multiple sources into unified format"
+   - "Validates document content meets business requirements"
+
+3. **business_significance**: Why does this workflow matter?
+   - "Ensures data quality before downstream processing"
+   - "Prevents corrupted documents from reaching critical systems"
+
+4. **flow_position**:
+   - "ENTRY_POINT" for initial ingestion
+   - "VALIDATION" for quality checks
+   - "PROCESSING" for transformations
+   - "TRANSFORMATION" for format changes
+   - "OUTPUT" for final delivery
+
+5. **risk_level**: Impact assessment
+   - Orchestrator usually CRITICAL or HIGH
+   - Validators often HIGH or MEDIUM
+   - Processors vary
+
+6. **impacted_workflows**: Which business processes depend on this?
+   - ["document_ingestion", "data_quality", "analytics_pipeline"]
+
+7. **business_narrative**: Story-format explanation.
+   - "The ValidationStep is a critical checkpoint that ensures all documents meet content quality standards before entering the analytics pipeline, preventing downstream errors."
+
+**INCLUDE these fields in each node's JSON output.**
+"""
+    elif pattern == "C":
+        semantic_context = """
+## Semantic Metadata Extraction - Pattern C (API/Service Interfaces)
+
+For each API/service boundary node:
+
+1. **semantic_role**: Choose from:
+   - `"gateway"` - Entry point for external access
+   - `"adapter"` - Adapts between protocols or formats
+   - `"mediator"` - Mediates between systems
+   - `"processor"` - Processes API requests
+   - Other roles as appropriate
+
+2. **business_context**: What does this interface do from business perspective?
+   - "Provides REST API for document upload and analysis"
+   - "Handles authentication and request routing for external clients"
+
+3. **business_significance**: Why is this interface critical?
+   - "Primary entry point for all external users"
+   - "Failure disconnects entire user base from the system"
+
+4. **flow_position**:
+   - "ENTRY_POINT" for API gateways
+   - "PROCESSING" for request handlers
+   - "OUTPUT" for response generation
+   - "ERROR_HANDLING" for error APIs
+
+5. **risk_level**: Business impact of outage?
+   - API gateways usually CRITICAL
+   - Handlers often HIGH
+   - Utilities MEDIUM or LOW
+
+6. **impacted_workflows**: Which workflows use this API?
+   - ["user_document_upload", "analysis_request", "report_generation"]
+
+7. **business_narrative**: Story format explanation.
+   - "The DocumentUploadAPI is a critical external-facing interface that accepts document uploads from customers, validates inputs, and initiates the processing pipeline."
+
+**INCLUDE these fields in each node's JSON output.**
+"""
+    else:
+        semantic_context = """
+## Semantic Metadata Extraction - Code/Class Level
+
+When describing each class or code element:
+
+1. **semantic_role**: What is this class's responsibility?
+   - "PROCESSOR" if it processes data
+   - "VALIDATOR" if it validates
+   - "REPOSITORY" if it stores data
+   - "FACTORY" if it creates objects
+   - Other roles based on responsibility
+
+2. **business_context**: What does this code do for the business?
+   - Not "implements X interface" but "handles document parsing for PDF formats"
+
+3. **business_significance**: Why does this code matter?
+   - What business capability does it enable?
+   - What breaks if it fails?
+
+4. **flow_position**: Where in business workflows?
+   - "ENTRY_POINT", "VALIDATION", "PROCESSING", "TRANSFORMATION", "STORAGE", "OUTPUT"
+
+5. **risk_level**: Business impact if broken?
+   - "CRITICAL", "HIGH", "MEDIUM", "LOW"
+
+6. **impacted_workflows**: List affected business workflows
+
+7. **business_narrative**: Story explaining this class's role and importance
+
+**INCLUDE these fields in each node's JSON output.**
+"""
+
+    return semantic_context
+
+
 def build_component_system_prompt(phase: str = "scout", pattern: str | None = None, focus_node_type: str | None = None) -> str:
     """Compose phase-specific system prompts for SCOUT and DRILL phases.
 
@@ -365,6 +530,44 @@ You are now in PHASE 2 (DRILL). Scout has gathered raw data. Your job is to synt
 
 ---
 
+## Semantic Metadata Extraction - Generic Pattern
+
+For each node you identify:
+
+1. **semantic_role**: What is this component's responsibility?
+   - `"gateway"` - Entry point for access
+   - `"processor"` - Processes data
+   - `"validator"` - Validates data
+   - `"orchestrator"` - Coordinates workflow
+   - `"transformer"` - Transforms data
+   - `"repository"` - Stores/manages data
+   - `"factory"` - Creates objects
+   - Other roles as appropriate
+
+2. **business_context**: What does this do in business terms?
+   - Not technical jargon, but business impact
+   - Examples: "Handles user authentication", "Processes document uploads"
+
+3. **business_significance**: Why does this matter?
+   - What capability does it enable?
+   - What breaks if it fails?
+
+4. **flow_position**: Where in business workflows?
+   - "ENTRY_POINT", "VALIDATION", "PROCESSING", "TRANSFORMATION", "AGGREGATION", "STORAGE", "OUTPUT"
+
+5. **risk_level**: Business impact if broken?
+   - "CRITICAL", "HIGH", "MEDIUM", "LOW"
+
+6. **impacted_workflows**: List affected business workflows
+   - Examples: ["document_processing", "user_authentication", "data_analysis"]
+
+7. **business_narrative**: Story explaining this component's role and importance
+   - 1-2 sentences in plain language
+
+**IMMEDIATELY populate these 7 fields for EVERY node.**
+
+---
+
 ## Communication and Output
 
 Your response should be the ComponentDrilldownResponse JSON structure:
@@ -389,6 +592,15 @@ Your response should be the ComponentDrilldownResponse JSON structure:
           "target_id": "node_id_from_graph_or_null",
           "parameters": {}
         },
+        "semantic_metadata": {
+          "semantic_role": "processor",
+          "business_context": "What this does in business terms",
+          "business_significance": "Why this matters",
+          "flow_position": "processing",
+          "risk_level": "high",
+          "impacted_workflows": ["workflow1", "workflow2"]
+        },
+        "business_narrative": "Story explaining this element's role and importance",
         "evidence": [],
         "sequence_order": 0
       }
@@ -515,6 +727,40 @@ Example for a parser class:
 - validate_output: "Validates parsing results against schema constraints"
 - extract_tables: "Specialized method for table extraction from document pages"
 - supported_formats: "Class attribute defining file types this parser handles"
+
+---
+
+## Semantic Metadata Extraction - Code/Class Level
+
+When describing each class, method, or code element:
+
+1. **semantic_role**: What is this code element's responsibility?
+   - "PROCESSOR" if it processes data
+   - "VALIDATOR" if it validates
+   - "REPOSITORY" if it stores data
+   - "FACTORY" if it creates objects
+   - "TRANSFORMER" if it transforms data
+   - Other roles based on responsibility
+
+2. **business_context**: What does this code do for the business?
+   - Not "implements X method" but "handles document parsing for PDF formats"
+   - Not technical jargon but business impact
+
+3. **business_significance**: Why does this code matter?
+   - What business capability does it enable?
+   - What breaks if it fails?
+
+4. **flow_position**: Where in business workflows?
+   - "ENTRY_POINT", "VALIDATION", "PROCESSING", "TRANSFORMATION", "STORAGE", "OUTPUT"
+
+5. **risk_level**: Business impact if broken?
+   - "CRITICAL", "HIGH", "MEDIUM", "LOW"
+
+6. **impacted_workflows**: List affected business workflows
+
+7. **business_narrative**: Story explaining this code element's role and importance
+
+**IMMEDIATELY populate these 7 fields for EVERY node.**
 
 ---
 
@@ -658,6 +904,43 @@ Example for a parser plugin system:
 
 ---
 
+## Semantic Metadata Extraction - Pattern A (Registry/Plugin Systems)
+
+For each node in the registry/plugin system:
+
+1. **semantic_role**: Choose from:
+   - `"factory"` - The registry/factory that creates plugin instances
+   - `"repository"` - Stores or manages plugin registrations
+   - `"gateway"` - Entry point for plugin access
+   - `"processor"` - Plugin that processes specific data formats
+   - Other roles as appropriate
+
+2. **business_context**: Explain what this node does in business terms (not technical).
+   - Registry: "Centralized management of parser implementations for different document formats"
+   - Plugin: "Handles PDF document parsing using vision/OCR technology"
+
+3. **business_significance**: Why is this important? What breaks if it fails?
+   - "Critical for document format detection and handling"
+   - "Failure would prevent vision-based document analysis"
+
+4. **flow_position**: Where does it fit in data flows?
+   - Choices: "ENTRY_POINT", "PROCESSING", "STORAGE", "OUTPUT", "ERROR_HANDLING"
+
+5. **risk_level**: Business impact if this fails?
+   - "CRITICAL" | "HIGH" | "MEDIUM" | "LOW"
+   - Registry typically CRITICAL
+   - Each plugin's importance varies
+
+6. **impacted_workflows**: List business workflows that depend on this.
+   - ["document_ingestion", "document_analysis", "format_detection"]
+
+7. **business_narrative**: A story-format explanation of this node's role.
+   - "The VisionParser is a specialized plugin that handles complex document layouts using OCR technology, enabling vision-based content extraction."
+
+**IMMEDIATELY populate these 7 fields for EVERY node.**
+
+---
+
 ## Output Structure
 
 When ready, respond with ComponentDrilldownResponse JSON containing:
@@ -666,7 +949,14 @@ When ready, respond with ComponentDrilldownResponse JSON containing:
 - **action.kind is determined by node_type:**
   - Use `"component_drilldown"` for: class (these can have sub-elements to explore)
   - Use `"inspect_source"` for: ALL OTHER TYPES (function, method, file, tool, service, etc.)
-- Example node structure:
+
+**SEMANTIC METADATA (NEW):** For each node, ALSO include:
+- `semantic_metadata`: Object with fields for business meaning (semantic_role, business_context, risk_level, impacted_workflows, etc.)
+- `business_narrative`: String explaining node's role in business context (1-2 sentences)
+
+See **Semantic Metadata Extraction** section below for detailed guidance.
+
+Example node structure with semantic metadata:
   ```json
   {
     "node_key": "vision-parser",
@@ -677,7 +967,16 @@ When ready, respond with ComponentDrilldownResponse JSON containing:
       "kind": "component_drilldown",
       "target_id": "python::deepdoc/parser/pdf_parser.py::VisionParser",
       "parameters": {}
-    }
+    },
+    "semantic_metadata": {
+      "semantic_role": "processor",
+      "business_context": "Specialized parser that uses vision and OCR technology to extract content from complex PDF layouts with images and diagrams",
+      "business_significance": "Enables document processing for non-text-heavy PDFs",
+      "flow_position": "processing",
+      "risk_level": "high",
+      "impacted_workflows": ["document_ingestion", "complex_document_analysis"]
+    },
+    "business_narrative": "The VisionParser is a specialized plugin that handles complex document layouts using OCR technology, enabling vision-based content extraction for visually-rich PDFs."
   }
   ```
 
@@ -794,6 +1093,47 @@ Example for a task executor:
 - Handler A: "Processes type A tasks with specific logic"
 - Handler B: "Processes type B tasks with different logic"
 - Finalizer: "Completes workflow and cleans up resources"
+
+---
+
+## Semantic Metadata Extraction - Pattern B (Workflow/Orchestration)
+
+For each orchestration/workflow node:
+
+1. **semantic_role**: Choose from:
+   - `"orchestrator"` - Coordinates overall flow
+   - `"processor"` - Processes data in the flow
+   - `"validator"` - Validates data
+   - `"transformer"` - Transforms data format
+   - Other roles as appropriate
+
+2. **business_context**: Explain the workflow in business terms.
+   - "Orchestrates document ingestion from multiple sources into unified format"
+   - "Validates document content meets business requirements"
+
+3. **business_significance**: Why does this workflow matter?
+   - "Ensures data quality before downstream processing"
+   - "Prevents corrupted documents from reaching critical systems"
+
+4. **flow_position**:
+   - "ENTRY_POINT" for initial ingestion
+   - "VALIDATION" for quality checks
+   - "PROCESSING" for transformations
+   - "TRANSFORMATION" for format changes
+   - "OUTPUT" for final delivery
+
+5. **risk_level**: Impact assessment
+   - Orchestrator usually CRITICAL or HIGH
+   - Validators often HIGH or MEDIUM
+   - Processors vary by importance
+
+6. **impacted_workflows**: Which business processes depend on this?
+   - ["document_ingestion", "data_quality", "analytics_pipeline"]
+
+7. **business_narrative**: Story-format explanation.
+   - "The ValidationStep is a critical checkpoint that ensures all documents meet content quality standards before entering the analytics pipeline."
+
+**IMMEDIATELY populate these 7 fields for EVERY node.**
 
 ---
 
@@ -934,6 +1274,46 @@ Example for a REST API:
 - User Management: "CRUD operations for user profiles and permissions"
 - Data Query: "Executes search and retrieval operations on data"
 - Notifications: "Sends events and alerts to clients"
+
+---
+
+## Semantic Metadata Extraction - Pattern C (API/Service Interfaces)
+
+For each API/service boundary node:
+
+1. **semantic_role**: Choose from:
+   - `"gateway"` - Entry point for external access
+   - `"adapter"` - Adapts between protocols or formats
+   - `"mediator"` - Mediates between systems
+   - `"processor"` - Processes API requests
+   - Other roles as appropriate
+
+2. **business_context**: What does this interface do from business perspective?
+   - "Provides REST API for document upload and analysis"
+   - "Handles authentication and request routing for external clients"
+
+3. **business_significance**: Why is this interface critical?
+   - "Primary entry point for all external users"
+   - "Failure disconnects entire user base from the system"
+
+4. **flow_position**:
+   - "ENTRY_POINT" for API gateways
+   - "PROCESSING" for request handlers
+   - "OUTPUT" for response generation
+   - "ERROR_HANDLING" for error APIs
+
+5. **risk_level**: Business impact of outage?
+   - "CRITICAL" for API gateways
+   - "HIGH" for handlers
+   - "MEDIUM" or "LOW" for utilities
+
+6. **impacted_workflows**: Which workflows use this API?
+   - ["user_document_upload", "analysis_request", "report_generation"]
+
+7. **business_narrative**: Story format explanation.
+   - "The DocumentUploadAPI is a critical external-facing interface that accepts uploads from customers and initiates processing."
+
+**IMMEDIATELY populate these 7 fields for EVERY node.**
 
 ---
 
