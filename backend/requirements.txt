@@ -11,3 +11,5 @@ networkx>=3.2,<4
 fastapi>=0.115,<1
 uvicorn[standard]>=0.32,<1
 redis>=5.0,<6
+anthropic>=0.25.0
+google-generativeai>=0.3.0
