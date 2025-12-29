@@ -24,6 +24,7 @@ import {
   LoadingView,
   DrilldownGraph,
   SourcePanel,
+  SemanticPanel,
   StatCard,
 } from "@/components/workspace"
 
@@ -56,6 +57,8 @@ type SourcePanelState = {
   endLine: number
 } | null
 
+type SemanticPanelState = NavigationNode | null
+
 // === Main Page ===
 
 export default function WorkspacePage() {
@@ -66,6 +69,7 @@ export default function WorkspacePage() {
   const [loading, setLoading] = useState(false)
   const [loadingNodeKey, setLoadingNodeKey] = useState<string | null>(null)
   const [sourcePanel, setSourcePanel] = useState<SourcePanelState>(null)
+  const [semanticPanel, setSemanticPanel] = useState<SemanticPanelState>(null)
   const [error, setError] = useState<string | null>(null)
   const [drilldownLogs, setDrilldownLogs] = useState<string[]>([])
   const [drilldownLoading, setDrilldownLoading] = useState(false)
@@ -126,6 +130,7 @@ export default function WorkspacePage() {
     if (canGoBack) {
       setHistory((prev) => prev.slice(0, -1))
       setSourcePanel(null)
+      setSemanticPanel(null)
     }
   }, [canGoBack])
 
@@ -169,6 +174,12 @@ export default function WorkspacePage() {
     setLoadingNodeKey(component.component_id)
     await executeDrilldown(component)
   }, [executeDrilldown])
+
+  const handleSemanticClick = useCallback((node: NavigationNode) => {
+    if (node.semantic_metadata) {
+      setSemanticPanel(node)
+    }
+  }, [])
 
   const handleNodeClick = useCallback(async (
     node: NavigationNode,
@@ -308,7 +319,7 @@ export default function WorkspacePage() {
       </AnimatePresence>
 
       <div className="flex">
-        <main className={`flex-1 max-w-6xl mx-auto px-6 py-8 transition-all ${sourcePanel ? "mr-[480px]" : ""}`}>
+        <main className={`flex-1 max-w-6xl mx-auto px-6 py-8 transition-all ${sourcePanel || semanticPanel ? "mr-[480px]" : ""}`}>
           <AnimatePresence mode="wait">
             {state.status !== "done" ? (
               <LoadingView key="loading" repoName={repoName} logs={state.logs} error={state.error} />
@@ -328,6 +339,7 @@ export default function WorkspacePage() {
                 response={currentEntry.response}
                 componentCard={currentEntry.componentCard}
                 onNodeClick={handleNodeClick}
+                onSemanticClick={handleSemanticClick}
                 loadingId={loadingNodeKey}
               />
             ) : null}
@@ -336,6 +348,10 @@ export default function WorkspacePage() {
 
         <AnimatePresence>
           {sourcePanel && <SourcePanel source={sourcePanel} onClose={() => setSourcePanel(null)} />}
+        </AnimatePresence>
+
+        <AnimatePresence>
+          {semanticPanel && <SemanticPanel node={semanticPanel} onClose={() => setSemanticPanel(null)} />}
         </AnimatePresence>
       </div>
     </div>

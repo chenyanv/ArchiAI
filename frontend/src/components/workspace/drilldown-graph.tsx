@@ -18,7 +18,7 @@ import {
 } from "@xyflow/react"
 import "@xyflow/react/dist/style.css"
 import { motion } from "framer-motion"
-import { FileCode, FolderOpen, Box, Workflow, Database, Globe, Cpu, ChevronRight, Loader2, Search, Code2 } from "lucide-react"
+import { FileCode, FolderOpen, Box, Workflow, Database, Globe, Cpu, ChevronRight, Loader2, Search, Code2, Info } from "lucide-react"
 import { type NavigationNode, type DrilldownResponse, type Component } from "@/lib/api"
 
 // === Constants ===
@@ -54,6 +54,7 @@ function estimateNodeHeight(description: string): number {
 type DrilldownNodeData = {
   node: NavigationNode
   onClick: () => void
+  onSemanticClick?: (e: React.MouseEvent) => void
   isLoading: boolean
   index: number
   style: { color: string; bg: string; Icon: typeof Box }
@@ -75,6 +76,7 @@ function buildGraph(
   nodes: NavigationNode[],
   isSequential: boolean,
   onClick: (node: NavigationNode) => void,
+  onSemanticClick: (node: NavigationNode, e: React.MouseEvent) => void,
   loadingId: string | null
 ): { nodes: GraphNode[]; edges: Edge[] } {
   if (nodes.length === 0) return { nodes: [], edges: [] }
@@ -96,6 +98,7 @@ function buildGraph(
         data: {
           node,
           onClick: () => onClick(node),
+          onSemanticClick: (e) => onSemanticClick(node, e),
           isLoading: loadingId === node.node_key,
           index: i,
           style,
@@ -133,6 +136,7 @@ function buildGraph(
         data: {
           node,
           onClick: () => onClick(node),
+          onSemanticClick: (e) => onSemanticClick(node, e),
           isLoading: loadingId === node.node_key,
           index: i,
           style,
@@ -151,9 +155,10 @@ function buildGraph(
 // === Node Component ===
 
 function DrilldownNode({ data }: NodeProps<Node<DrilldownNodeData, "drilldown">>) {
-  const { node, onClick, isLoading, index, style, isSequential, isLast } = data
+  const { node, onClick, onSemanticClick, isLoading, index, style, isSequential, isLast } = data
   const Icon = style.Icon
   const isInspect = node.action_kind === "inspect_source"
+  const hasSemanticMetadata = !!node.semantic_metadata
 
   return (
     <motion.div
@@ -210,7 +215,22 @@ function DrilldownNode({ data }: NodeProps<Node<DrilldownNodeData, "drilldown">>
             <p className="text-sm text-zinc-600 mt-2 leading-relaxed">{node.description}</p>
           </div>
 
-          <ChevronRight className="w-5 h-5 text-zinc-400 shrink-0 mt-1" />
+          {/* Action buttons */}
+          <div className="flex items-center gap-2 shrink-0">
+            {hasSemanticMetadata && onSemanticClick && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onSemanticClick(e)
+                }}
+                className="p-1.5 hover:bg-blue-50 rounded-lg transition-colors"
+                title="View semantic information"
+              >
+                <Info className="w-4 h-4 text-blue-600" />
+              </button>
+            )}
+            <ChevronRight className="w-5 h-5 text-zinc-400 mt-1" />
+          </div>
         </div>
       </div>
 
@@ -229,10 +249,11 @@ interface Props {
   response: DrilldownResponse
   componentCard: Component
   onNodeClick: (node: NavigationNode, componentCard: Component, cacheId: string) => void
+  onSemanticClick?: (node: NavigationNode) => void
   loadingId: string | null
 }
 
-export function DrilldownGraph({ response, componentCard, onNodeClick, loadingId }: Props) {
+export function DrilldownGraph({ response, componentCard, onNodeClick, onSemanticClick, loadingId }: Props) {
   const [nodes, setNodes, onNodesChange] = useNodesState<GraphNode>([])
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([])
   const [visible, setVisible] = useState(0)
@@ -256,10 +277,16 @@ export function DrilldownGraph({ response, componentCard, onNodeClick, loadingId
     const handleClick = (node: NavigationNode) => {
       onNodeClick(node, componentCard, response.cache_id)
     }
-    const { nodes: n, edges: e } = buildGraph(visibleNodes, response.is_sequential, handleClick, loadingId)
+    const handleSemanticClick = (node: NavigationNode, e: React.MouseEvent) => {
+      if (onSemanticClick) {
+        e.stopPropagation()
+        onSemanticClick(node)
+      }
+    }
+    const { nodes: n, edges: e } = buildGraph(visibleNodes, response.is_sequential, handleClick, handleSemanticClick, loadingId)
     setNodes(n)
     setEdges(e)
-  }, [visibleNodes, response.is_sequential, response.cache_id, componentCard, onNodeClick, loadingId, setNodes, setEdges])
+  }, [visibleNodes, response.is_sequential, response.cache_id, componentCard, onNodeClick, onSemanticClick, loadingId, setNodes, setEdges])
 
   // Calculate height based on actual node heights
   const height = useMemo(() => {
