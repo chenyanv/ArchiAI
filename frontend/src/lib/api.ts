@@ -76,6 +76,16 @@ export interface NavigationBreadcrumb {
   metadata?: Record<string, unknown>
 }
 
+export interface SemanticMetadata {
+  semantic_role?: string  // e.g., "gateway", "processor", "validator"
+  business_context?: string  // What does this do in business terms
+  business_significance?: string  // Why it matters
+  flow_position?: string  // Where in the flow (e.g., "ENTRY_POINT", "PROCESSING")
+  risk_level?: string  // Business impact level (CRITICAL, HIGH, MEDIUM, LOW)
+  dependencies_description?: string  // What does it depend on
+  impacted_workflows?: string[]  // Business workflows affected
+}
+
 export interface NavigationNode {
   node_key: string
   title: string
@@ -85,6 +95,8 @@ export interface NavigationNode {
   target_id?: string
   action_parameters?: Record<string, unknown>  // Virtual node context (e.g., paths for file groups)
   sequence_order?: number
+  semantic_metadata?: SemanticMetadata  // Business semantic information
+  business_narrative?: string  // Story explaining this node's role
 }
 
 export interface DrilldownResponse {
