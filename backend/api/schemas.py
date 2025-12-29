@@ -5,6 +5,40 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
 
+# === Semantic Metadata (for bridging code structure to business meaning) ===
+
+class SemanticMetadataDTO(BaseModel):
+    """Business semantic information extracted from code analysis."""
+    semantic_role: Optional[str] = Field(
+        default=None,
+        description="Role in business workflows (e.g., 'gateway', 'processor', 'validator')"
+    )
+    business_context: Optional[str] = Field(
+        default=None,
+        description="Explanation of what this component does in business terms"
+    )
+    business_significance: Optional[str] = Field(
+        default=None,
+        description="Why this component matters to the business"
+    )
+    flow_position: Optional[str] = Field(
+        default=None,
+        description="Position in business data/control flows"
+    )
+    risk_level: Optional[str] = Field(
+        default=None,
+        description="Business impact if this component fails"
+    )
+    dependencies_description: Optional[str] = Field(
+        default=None,
+        description="Critical dependencies this component relies on"
+    )
+    impacted_workflows: List[str] = Field(
+        default_factory=list,
+        description="Business workflows affected by this component"
+    )
+
+
 # === Analyze ===
 
 class AnalyzeRequest(BaseModel):
@@ -72,6 +106,14 @@ class NavigationNodeDTO(BaseModel):
     target_id: Optional[str] = None
     action_parameters: Optional[Dict[str, Any]] = None
     sequence_order: Optional[int] = None
+    semantic_metadata: Optional[SemanticMetadataDTO] = Field(
+        default=None,
+        description="Business semantic information about this node"
+    )
+    business_narrative: Optional[str] = Field(
+        default=None,
+        description="Story-format explanation of this node's role in business context"
+    )
 
 
 class DrilldownResponse(BaseModel):

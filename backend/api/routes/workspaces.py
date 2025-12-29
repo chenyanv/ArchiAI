@@ -445,25 +445,44 @@ def _format_drilldown_response(response, workspace_id: str, cache_id: str, datab
     breadcrumb_dicts = [b.model_dump() for b in response.breadcrumbs]
     new_cache_id = BreadcrumbCache.save_breadcrumbs(workspace_id, breadcrumb_dicts)
 
+    def _format_node(n):
+        """Convert NavigationNode to API dict, including semantic metadata."""
+        node_dict = {
+            "node_key": n.node_key,
+            "title": n.title,
+            "node_type": n.node_type,
+            "description": n.description,
+            "action_kind": _validate_action_kind(n.action.kind, n.node_type),
+            "target_id": _validate_target_id(n.action.target_id, workspace_id, database_url),
+            "action_parameters": n.action.parameters,  # Preserve virtual node context
+            "sequence_order": n.sequence_order,
+        }
+
+        # Add semantic metadata if present, converting Enums to strings
+        if n.semantic_metadata:
+            node_dict["semantic_metadata"] = {
+                "semantic_role": n.semantic_metadata.semantic_role.value if n.semantic_metadata.semantic_role else None,
+                "business_context": n.semantic_metadata.business_context,
+                "business_significance": n.semantic_metadata.business_significance,
+                "flow_position": n.semantic_metadata.flow_position.value if n.semantic_metadata.flow_position else None,
+                "risk_level": n.semantic_metadata.risk_level.value if n.semantic_metadata.risk_level else None,
+                "dependencies_description": n.semantic_metadata.dependencies_description,
+                "impacted_workflows": n.semantic_metadata.impacted_workflows,
+            }
+
+        # Add business narrative if present
+        if n.business_narrative:
+            node_dict["business_narrative"] = n.business_narrative
+
+        return node_dict
+
     return {
         "component_id": response.component_id,
         "agent_goal": response.agent_goal,
         "focus_label": response.next_layer.focus_label,
         "rationale": response.next_layer.rationale,
         "is_sequential": response.next_layer.is_sequential,
-        "nodes": [
-            {
-                "node_key": n.node_key,
-                "title": n.title,
-                "node_type": n.node_type,
-                "description": n.description,
-                "action_kind": _validate_action_kind(n.action.kind, n.node_type),
-                "target_id": _validate_target_id(n.action.target_id, workspace_id, database_url),
-                "action_parameters": n.action.parameters,  # Preserve virtual node context
-                "sequence_order": n.sequence_order,
-            }
-            for n in response.next_layer.nodes
-        ],
+        "nodes": [_format_node(n) for n in response.next_layer.nodes],
         "cache_id": new_cache_id,  # Return new cache_id for next drilldown
     }
 
