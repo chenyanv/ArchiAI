@@ -71,6 +71,10 @@ class ComponentDTO(BaseModel):
     confidence: str
     objective: List[str] = []
     leading_landmarks: List[Dict[str, Any]] = []
+    semantic_metadata: Optional[SemanticMetadataDTO] = Field(
+        default=None,
+        description="Business semantic information for this component"
+    )
 
 
 class WorkspaceOverviewResponse(BaseModel):

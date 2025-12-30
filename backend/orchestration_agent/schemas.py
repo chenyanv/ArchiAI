@@ -7,6 +7,8 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 from typing_extensions import Literal
 
+from component_agent.schemas import SemanticMetadata
+
 
 # Architecture layer is now dynamic - LLM decides the categories based on project type
 # Examples: "core", "api", "commands", "parser", "models", "utils", etc.
@@ -66,6 +68,10 @@ class ComponentCard(BaseModel):
     confidence: ConfidenceLevel = Field(
         default="medium",
         description="Confidence level in this component identification"
+    )
+    semantic_metadata: Optional[SemanticMetadata] = Field(
+        default=None,
+        description="Business semantic information for this component (role, significance, workflows, etc.)"
     )
 
 

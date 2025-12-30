@@ -29,6 +29,7 @@ from ..schemas import (
     DrilldownRequest,
     DrilldownResponse,
     NavigationNodeDTO,
+    SemanticMetadataDTO,
     SystemOverviewDTO,
     WorkspaceOverviewResponse,
 )
@@ -318,6 +319,12 @@ async def get_overview(workspace_id: str):
     overview = plan.get("system_overview", {})
     cards = plan.get("component_cards", [])
 
+    def _convert_semantic_metadata(semantic_dict: dict | None) -> SemanticMetadataDTO | None:
+        """Convert semantic_metadata from plan to API format."""
+        if not semantic_dict:
+            return None
+        return SemanticMetadataDTO(**semantic_dict)
+
     return WorkspaceOverviewResponse(
         workspace_id=workspace_id,
         system_overview=SystemOverviewDTO(
@@ -332,6 +339,7 @@ async def get_overview(workspace_id: str):
                 confidence=c.get("confidence", "medium"),
                 objective=c.get("objective", []),
                 leading_landmarks=c.get("leading_landmarks", []),
+                semantic_metadata=_convert_semantic_metadata(c.get("semantic_metadata")),
             )
             for c in cards
         ],

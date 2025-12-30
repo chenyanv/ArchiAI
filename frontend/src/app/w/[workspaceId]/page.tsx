@@ -57,7 +57,7 @@ type SourcePanelState = {
   endLine: number
 } | null
 
-type SemanticPanelState = NavigationNode | null
+type SemanticPanelState = (NavigationNode | Component) | null
 
 // === Main Page ===
 
@@ -178,6 +178,12 @@ export default function WorkspacePage() {
   const handleSemanticClick = useCallback((node: NavigationNode) => {
     if (node.semantic_metadata) {
       setSemanticPanel(node)
+    }
+  }, [])
+
+  const handleComponentSemanticClick = useCallback((component: Component) => {
+    if (component.semantic_metadata) {
+      setSemanticPanel(component)
     }
   }, [])
 
@@ -331,6 +337,7 @@ export default function WorkspacePage() {
                 rankedGroups={currentEntry.rankedGroups}
                 businessFlow={state.businessFlow || []}
                 onComponentClick={handleComponentClick}
+                onComponentSemanticClick={handleComponentSemanticClick}
                 loadingId={loadingNodeKey}
               />
             ) : currentEntry?.type === "drilldown" ? (
@@ -366,6 +373,7 @@ function ResultsView({
   rankedGroups,
   businessFlow,
   onComponentClick,
+  onComponentSemanticClick,
   loadingId,
 }: {
   repoName: string
@@ -373,6 +381,7 @@ function ResultsView({
   rankedGroups: RankedGroup[]
   businessFlow: ComponentEdge[]
   onComponentClick: (component: Component) => void
+  onComponentSemanticClick: (component: Component) => void
   loadingId: string | null
 }) {
   const totalComponents = rankedGroups.reduce((sum, g) => sum + g.components.length, 0)
@@ -402,7 +411,7 @@ function ResultsView({
 
       <div>
         <h2 className="text-xl font-semibold mb-4">Architecture</h2>
-        <ArchitectureGraph rankedGroups={rankedGroups} businessFlow={businessFlow} onComponentClick={onComponentClick} loadingId={loadingId} />
+        <ArchitectureGraph rankedGroups={rankedGroups} businessFlow={businessFlow} onComponentClick={onComponentClick} onComponentSemanticClick={onComponentSemanticClick} loadingId={loadingId} />
       </div>
     </motion.div>
   )

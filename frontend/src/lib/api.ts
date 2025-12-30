@@ -16,6 +16,7 @@ export interface Component {
   confidence: string
   objective: string[]
   leading_landmarks: Array<{ node_id?: string; symbol?: string; summary?: string }>
+  semantic_metadata?: SemanticMetadata  // Business semantic information about this component
 }
 
 export interface ComponentEdge {

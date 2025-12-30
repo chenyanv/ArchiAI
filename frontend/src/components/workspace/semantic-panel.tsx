@@ -1,12 +1,13 @@
 "use client"
 
-import type { NavigationNode } from "@/lib/api"
+import type { NavigationNode, Component } from "@/lib/api"
+import { isNavigationNode, isComponent } from "@/lib/type-guards"
 import { SemanticBadge } from "./semantic-badge"
 import { motion } from "framer-motion"
 import { X, AlertTriangle, Info } from "lucide-react"
 
 interface SemanticPanelProps {
-  node: NavigationNode
+  node: NavigationNode | Component
   onClose: () => void
 }
 
@@ -21,6 +22,10 @@ interface SemanticPanelProps {
  * - Dependencies
  */
 export function SemanticPanel({ node, onClose }: SemanticPanelProps) {
+  const title = isNavigationNode(node) ? node.title : (isComponent(node) ? node.module_name : 'Unknown')
+  const subtitle = isNavigationNode(node) ? node.node_type : (isComponent(node) ? node.component_id : '')
+  const description = isNavigationNode(node) ? node.description : (isComponent(node) ? node.business_signal : '')
+
   return (
     <motion.div
       initial={{ x: "100%" }}
@@ -32,8 +37,8 @@ export function SemanticPanel({ node, onClose }: SemanticPanelProps) {
       {/* Header */}
       <div className="sticky top-0 bg-white border-b border-slate-200 p-4 flex items-start justify-between gap-3">
         <div className="flex-1 min-w-0">
-          <h2 className="font-bold text-lg text-slate-900 truncate">{node.title}</h2>
-          <p className="text-xs text-slate-500 mt-1">{node.node_type}</p>
+          <h2 className="font-bold text-lg text-slate-900 truncate">{title}</h2>
+          <p className="text-xs text-slate-500 mt-1">{subtitle}</p>
         </div>
         <button
           onClick={onClose}
@@ -46,10 +51,12 @@ export function SemanticPanel({ node, onClose }: SemanticPanelProps) {
       {/* Content */}
       <div className="p-4 space-y-6">
               {/* Node Description */}
-              <div className="space-y-2">
-                <h3 className="text-xs font-semibold text-slate-600 uppercase tracking-wide">Description</h3>
-                <p className="text-sm text-slate-700 leading-relaxed">{node.description}</p>
-              </div>
+              {description && (
+                <div className="space-y-2">
+                  <h3 className="text-xs font-semibold text-slate-600 uppercase tracking-wide">Description</h3>
+                  <p className="text-sm text-slate-700 leading-relaxed">{description}</p>
+                </div>
+              )}
 
               {/* Semantic Role & Risk */}
               {node.semantic_metadata && (
@@ -62,13 +69,13 @@ export function SemanticPanel({ node, onClose }: SemanticPanelProps) {
                   </div>
 
                   {/* Business Narrative */}
-                  {(node.business_narrative ||
+                  {((isNavigationNode(node) && node.business_narrative) ||
                     node.semantic_metadata.business_context ||
                     node.semantic_metadata.impacted_workflows) && (
                     <div className="space-y-2">
                       <h3 className="text-xs font-semibold text-slate-600 uppercase tracking-wide">Business Context</h3>
                       <div className="space-y-3 pt-2">
-                        {node.business_narrative && (
+                        {isNavigationNode(node) && node.business_narrative && (
                           <div className="text-sm italic text-slate-700 bg-blue-50 p-3 rounded-lg border border-blue-200">
                             {node.business_narrative}
                           </div>
@@ -159,18 +166,20 @@ export function SemanticPanel({ node, onClose }: SemanticPanelProps) {
                 </>
               )}
 
-              {/* Action Info */}
-              <div className="space-y-2 pt-4 border-t border-slate-200">
-                <h3 className="text-xs font-semibold text-slate-600 uppercase tracking-wide">Action</h3>
-                <div className="text-sm text-slate-600">
-                  <span className="font-semibold">{node.action_kind}</span>
-                </div>
-                {node.target_id && (
-                  <div className="text-xs text-slate-500 font-mono bg-slate-50 p-2 rounded truncate">
-                    {node.target_id}
+              {/* Action Info - only for NavigationNode */}
+              {isNavigationNode(node) && (
+                <div className="space-y-2 pt-4 border-t border-slate-200">
+                  <h3 className="text-xs font-semibold text-slate-600 uppercase tracking-wide">Action</h3>
+                  <div className="text-sm text-slate-600">
+                    <span className="font-semibold">{node.action_kind}</span>
                   </div>
-                )}
-              </div>
+                  {node.target_id && (
+                    <div className="text-xs text-slate-500 font-mono bg-slate-50 p-2 rounded truncate">
+                      {node.target_id}
+                    </div>
+                  )}
+                </div>
+              )}
       </div>
     </motion.div>
   )

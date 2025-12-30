@@ -20,7 +20,7 @@ import {
 } from "@xyflow/react"
 import "@xyflow/react/dist/style.css"
 import { motion } from "framer-motion"
-import { Box, ChevronRight, Loader2 } from "lucide-react"
+import { Box, ChevronRight, Loader2, Info } from "lucide-react"
 import { type Component, type ComponentEdge, type RankedGroup } from "@/lib/api"
 
 // === Constants ===
@@ -45,6 +45,7 @@ type LayerStyle = { label: string; color: string; bg: string }
 type ComponentNodeData = {
   component: Component
   onClick: () => void
+  onSemanticClick?: (e: React.MouseEvent) => void
   isLoading: boolean
   index: number
   style: LayerStyle
@@ -80,6 +81,7 @@ function buildGraph(
   rankedGroups: RankedGroup[],
   businessFlow: ComponentEdge[],
   onClick: (c: Component) => void,
+  onSemanticClick: (c: Component, e: React.MouseEvent) => void,
   loadingId: string | null
 ): { nodes: GraphNode[]; edges: Edge[] } {
   if (rankedGroups.length === 0) return { nodes: [], edges: [] }
@@ -129,6 +131,7 @@ function buildGraph(
           component: c,
           index: globalIdx++,
           onClick: () => onClick(c),
+          onSemanticClick: (e) => onSemanticClick(c, e),
           isLoading: loadingId === id,
           style: { label: toTitleCase(layer), ...style },
         },
@@ -185,7 +188,8 @@ function buildGraph(
 // === Node Components ===
 
 function ComponentNode({ data }: NodeProps<Node<ComponentNodeData, "component">>) {
-  const { component: c, onClick, isLoading, index, style } = data
+  const { component: c, onClick, onSemanticClick, isLoading, index, style } = data
+  const hasSemanticMetadata = !!c.semantic_metadata
 
   return (
     <motion.div
@@ -200,15 +204,29 @@ function ComponentNode({ data }: NodeProps<Node<ComponentNodeData, "component">>
         className={`px-4 py-3 rounded-xl border-2 bg-white shadow-md min-w-[220px] max-w-[260px] transition-all hover:shadow-lg hover:scale-[1.02] ${isLoading ? "opacity-70" : ""}`}
         style={{ borderColor: style.color }}
       >
-        <div className="flex items-start gap-3">
+        <div className="flex items-start gap-2">
           <div className="p-2 rounded-lg shrink-0" style={{ backgroundColor: style.bg }}>
             {isLoading ? <Loader2 className="w-4 h-4 animate-spin" style={{ color: style.color }} /> : <Box className="w-4 h-4" style={{ color: style.color }} />}
           </div>
           <div className="flex-1 min-w-0">
-            <div className="font-semibold text-sm truncate">{c.module_name}</div>
-            {c.directory && <div className="text-xs text-zinc-400 font-mono truncate mt-0.5">{c.directory}</div>}
+            <div className="font-semibold text-sm" style={{ overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>{c.module_name || c.component_id || '(unnamed)'}</div>
+            {c.directory && <div className="text-xs text-zinc-400 font-mono mt-0.5" style={{ overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>{c.directory}</div>}
           </div>
-          <ChevronRight className="w-4 h-4 text-zinc-400 shrink-0 mt-1" />
+          <div className="flex items-center gap-1 shrink-0">
+            {hasSemanticMetadata && onSemanticClick && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onSemanticClick(e)
+                }}
+                className="p-1 hover:bg-blue-50 rounded-lg transition-colors"
+                title="View semantic information"
+              >
+                <Info className="w-4 h-4 text-blue-600" />
+              </button>
+            )}
+            <ChevronRight className="w-4 h-4 text-zinc-400 mt-0.5" />
+          </div>
         </div>
         <p className="text-xs text-zinc-600 mt-2 line-clamp-2">{c.business_signal}</p>
         <div className="flex items-center gap-1.5 mt-2">
@@ -315,10 +333,11 @@ interface Props {
   rankedGroups: RankedGroup[]
   businessFlow?: ComponentEdge[]
   onComponentClick: (c: Component) => void
+  onComponentSemanticClick?: (c: Component) => void
   loadingId: string | null
 }
 
-export function ArchitectureGraph({ rankedGroups, businessFlow = [], onComponentClick, loadingId }: Props) {
+export function ArchitectureGraph({ rankedGroups, businessFlow = [], onComponentClick, onComponentSemanticClick, loadingId }: Props) {
   const [nodes, setNodes, onNodesChange] = useNodesState<GraphNode>([])
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([])
   const totalComponents = rankedGroups.reduce((sum, g) => sum + g.components.length, 0)
@@ -345,10 +364,16 @@ export function ArchitectureGraph({ rankedGroups, businessFlow = [], onComponent
 
   // Update graph
   useEffect(() => {
-    const { nodes: n, edges: e } = buildGraph(visibleGroups, businessFlow, onComponentClick, loadingId)
+    const handleSemanticClick = (c: Component, e: React.MouseEvent) => {
+      if (onComponentSemanticClick) {
+        e.stopPropagation()
+        onComponentSemanticClick(c)
+      }
+    }
+    const { nodes: n, edges: e } = buildGraph(visibleGroups, businessFlow, onComponentClick, handleSemanticClick, loadingId)
     setNodes(n)
     setEdges(e)
-  }, [visibleGroups, businessFlow, onComponentClick, loadingId, setNodes, setEdges])
+  }, [visibleGroups, businessFlow, onComponentClick, onComponentSemanticClick, loadingId, setNodes, setEdges])
 
   // Calculate height based on ranks (pre-grouped by backend)
   const height = useMemo(() => {
