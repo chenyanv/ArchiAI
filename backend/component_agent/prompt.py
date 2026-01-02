@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 from typing import Mapping, Sequence, Set
 
-from .schemas import ComponentDrilldownRequest, NavigationBreadcrumb, DRILLABLE_NODE_TYPES
+from .schemas import ComponentDrilldownRequest, NavigationBreadcrumb, DRILLABLE_NODE_TYPES, NodeRelationship
 
 
 def _build_action_kind_critical_rule(drillable_types: Set[str] | None = None) -> str:
@@ -232,6 +232,108 @@ When describing each class or code element:
 """
 
     return semantic_context
+
+
+def _build_relationship_extraction_guidance() -> str:
+    """Build guidance for extracting node relationships for graph visualization.
+
+    This section teaches the LLM to identify and return relationships between
+    NavigationNode objects, enabling rich graph-based visualization on the frontend.
+
+    Returns:
+        Formatted guidance section for relationship extraction.
+    """
+    return """
+## Relationship Graph Extraction - Enhanced Visualization
+
+To create a rich, interactive visualization, identify relationships between the nodes
+you're returning. The frontend will render these as a hierarchical graph with directed edges.
+
+### Relationship Types (choose what applies):
+
+1. **"calls"** - One node invokes another
+   - Examples: `execute_command` calls `_handle_services`
+   - Use when: Method A directly calls Method B
+
+2. **"contains"** - Structural containment
+   - Examples: `AdminCLI` contains `__init__`, `run_interactive`, etc.
+   - Use when: Class contains methods, file contains classes
+
+3. **"uses"** - Dependency relationship
+   - Examples: A imports B, A inherits from B
+   - Use when: Dependency, inheritance, or import relationship
+
+4. **"depends_on"** - Runtime/execution dependency
+   - Examples: A needs B to execute properly
+   - Use when: Clear data or execution flow dependency
+
+5. **"triggers"** - Event-driven or callback pattern
+   - Examples: Event handler triggers callback
+   - Use when: Async, signal, or callback relationship
+
+6. **"returns_to"** - Async callback pattern
+   - Examples: Promise resolution returns to caller
+   - Use when: Async/await pattern
+
+### When to Include Relationships:
+
+✅ **INCLUDE:**
+- Obvious control flow (A calls B, dispatcher pattern)
+- Structural relationships (class contains methods)
+- Handler dispatch patterns (one node routes to many handlers)
+- Main execution paths (entry points, key sequences)
+
+❌ **SKIP:**
+- Circular dependencies (show only main direction)
+- Every single import (be selective, focus on architecturally significant ones)
+- Sequential auto-connections (is_sequential=true handles that)
+- Trivial helper dependencies (focus on significant relationships)
+
+### JSON Format:
+
+```json
+{
+  "nodes": [
+    {"node_key": "node_init", "title": "__init__", ...},
+    {"node_key": "node_execute", "title": "execute_command", ...},
+    {"node_key": "node_handler", "title": "Service Manager", ...}
+  ],
+  "relationships": [
+    {
+      "from_node_key": "node_init",
+      "to_node_key": "node_execute",
+      "relationship_type": "calls",
+      "flow_label": "initialization → command processing"
+    },
+    {
+      "from_node_key": "node_execute",
+      "to_node_key": "node_handler",
+      "relationship_type": "calls",
+      "flow_label": "routes service commands"
+    }
+  ]
+}
+```
+
+### Guidelines:
+
+- **node_key values**: Must EXACTLY match the node_key in your nodes list
+- **relationship_type**: Use one of the 6 types above
+- **flow_label**: Optional, 1-3 words describing the relationship purpose
+- **Quantity**: Aim for 0-20 relationships (avoid visual clutter)
+- **Direction**: from_node_key → to_node_key shows control/data flow
+
+### Why This Matters:
+
+The frontend will:
+- Render nodes in hierarchical levels (root to leaves)
+- Draw directed edges between connected nodes
+- Label edges with flow_label for context
+- Allow users to understand control flow at a glance
+- Enable multi-level architecture exploration
+
+**INCLUDE relationships in your JSON output when present.**
+"""
 
 
 def build_component_system_prompt(phase: str = "scout", pattern: str | None = None, focus_node_type: str | None = None) -> str:
@@ -568,6 +670,12 @@ For each node you identify:
 
 ---
 
+## Relationship Graph Extraction
+
+{_build_relationship_extraction_guidance()}
+
+---
+
 ## Communication and Output
 
 Your response should be the ComponentDrilldownResponse JSON structure:
@@ -603,6 +711,14 @@ Your response should be the ComponentDrilldownResponse JSON structure:
         "business_narrative": "Story explaining this element's role and importance",
         "evidence": [],
         "sequence_order": 0
+      }
+    ],
+    "relationships": [
+      {
+        "from_node_key": "node1",
+        "to_node_key": "node2",
+        "relationship_type": "calls",
+        "flow_label": "control flow description"
       }
     ]
   },

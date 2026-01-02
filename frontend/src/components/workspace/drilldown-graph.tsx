@@ -25,6 +25,15 @@ import { type NavigationNode, type NodeRelationship, type DrilldownResponse, typ
 
 // === Constants ===
 
+const RELATIONSHIP_TYPE_STYLES: Record<string, { color: string; dashArray: string }> = {
+  calls: { color: "#dc2626", dashArray: "4 2" },        // Red - direct invocation
+  contains: { color: "#7c3aed", dashArray: "6 3" },     // Purple - structural
+  uses: { color: "#0891b2", dashArray: "5 2" },         // Cyan - dependency
+  depends_on: { color: "#d97706", dashArray: "7 2" },   // Orange - runtime
+  triggers: { color: "#be185d", dashArray: "3 3" },     // Pink - event
+  returns_to: { color: "#059669", dashArray: "8 2" },   // Green - async
+}
+
 const NODE_TYPE_STYLES: Record<string, { color: string; bg: string; Icon: typeof Box }> = {
   file: { color: "#2563eb", bg: "#dbeafe", Icon: FileCode },
   directory: { color: "#7c3aed", bg: "#ede9fe", Icon: FolderOpen },
@@ -174,8 +183,9 @@ function buildGraph(
       })
     })
 
-    // Add relationship edges
+    // Add relationship edges with type-based styling
     relationships.forEach((rel, idx) => {
+      const relStyle = RELATIONSHIP_TYPE_STYLES[rel.relationship_type] || RELATIONSHIP_TYPE_STYLES.calls
       edges.push({
         id: `rel-${idx}`,
         source: rel.from_node_key,
@@ -184,11 +194,11 @@ function buildGraph(
         animated: true,
         label: rel.flow_label,
         style: {
-          stroke: "#9ca3af",
+          stroke: relStyle.color,
           strokeWidth: 1.5,
-          strokeDasharray: "4 2"
+          strokeDasharray: relStyle.dashArray
         },
-        markerEnd: { type: MarkerType.ArrowClosed, color: "#9ca3af" },
+        markerEnd: { type: MarkerType.ArrowClosed, color: relStyle.color },
       })
     })
   } else if (isSequential) {
