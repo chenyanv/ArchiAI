@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import deque
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 import networkx as nx
@@ -16,6 +17,78 @@ from .graph_queries import get_graph, normalise_category
 
 DEFAULT_MAX_DEPTH = 2
 DEFAULT_MAX_NODES = 30
+
+
+@dataclass(frozen=True)
+class ParsedNodeId:
+    """Parse and identify node ID structure and type."""
+
+    language: str
+    file_path: str
+    class_name: Optional[str] = None
+    method_name: Optional[str] = None
+
+    @classmethod
+    def parse(cls, node_id: str) -> ParsedNodeId:
+        """
+        Parse node_id into components.
+
+        Format:
+        - file: python::path/to/file.py
+        - class: python::path/to/file.py::ClassName
+        - method: python::path/to/file.py::ClassName::method_name
+        - function: python::path/to/file.py::function_name (treated as class_name)
+
+        Args:
+            node_id: The node ID to parse
+
+        Returns:
+            ParsedNodeId with identified components
+        """
+        if not node_id.startswith("python::"):
+            raise ValueError(f"Invalid node_id format: {node_id}. Must start with 'python::'")
+
+        parts = node_id[8:].split("::")  # Remove "python::" prefix
+
+        if len(parts) == 1:
+            # File level only
+            return cls(language="python", file_path=parts[0])
+
+        file_path = parts[0]
+
+        if len(parts) == 2:
+            # Class or function level
+            return cls(language="python", file_path=file_path, class_name=parts[1])
+
+        if len(parts) >= 3:
+            # Method level: class_name::method_name
+            return cls(
+                language="python",
+                file_path=file_path,
+                class_name=parts[1],
+                method_name=parts[2],
+            )
+
+        raise ValueError(f"Invalid node_id format: {node_id}")
+
+    def to_node_id(self) -> str:
+        """Convert back to node_id string format."""
+        parts = [self.language, self.file_path]
+        if self.class_name:
+            parts.append(self.class_name)
+        if self.method_name:
+            parts.append(self.method_name)
+        return "::".join(parts)
+
+    def to_class_node_id(self) -> str:
+        """Get the class-level node_id (for graph lookup)."""
+        if not self.class_name:
+            return self.to_node_id()
+        return f"{self.language}::{self.file_path}::{self.class_name}"
+
+    def is_method(self) -> bool:
+        """Check if this is a method-level node_id."""
+        return self.method_name is not None
 
 
 class ExtractSubgraphInput(BaseModel):
@@ -82,6 +155,46 @@ def _bfs_expand(
                 queue.append((neighbor, depth + 1))
 
     return visited, edges
+
+
+def _get_method_source(
+    node_id: str, workspace_id: str, database_url: str | None
+) -> Optional[Dict[str, Any]]:
+    """
+    Retrieve method-level source code from database.
+
+    Fallback strategy when node is not found in call graph but exists in database.
+
+    Args:
+        node_id: Full node ID (including method name)
+        workspace_id: Workspace identifier
+        database_url: Database URL
+
+    Returns:
+        Dict with source_code, docstring, line ranges, or None if not found
+    """
+    session = create_session(database_url)
+    try:
+        stmt = select(ProfileRecord).where(
+            ProfileRecord.id == node_id,
+            ProfileRecord.workspace_id == workspace_id,
+            ProfileRecord.kind == "method",
+        )
+        record = session.execute(stmt).scalar_one_or_none()
+
+        if not record:
+            return None
+
+        return {
+            "source_code": record.source_code or "",
+            "docstring": record.docstring or "",
+            "start_line": record.start_line,
+            "end_line": record.end_line,
+            "parameters": record.parameters,
+            "kind": record.kind,
+        }
+    finally:
+        session.close()
 
 
 def _generate_fallback_summary(record: ProfileRecord) -> str:
@@ -235,15 +348,80 @@ def _extract_subgraph_impl(
     workspace_id: str,
     database_url: str | None,
 ) -> Dict[str, Any]:
-    """Implementation of subgraph extraction."""
+    """
+    Implementation of subgraph extraction with intelligent fallback strategy.
+
+    Three-tier approach:
+    1️⃣ Try to find node in call graph → return call relationships + BFS expansion
+    2️⃣ If method not in graph → retrieve source code from database
+    3️⃣ If method's class is in graph → return class context with note
+    """
     graph = get_graph(workspace_id, database_url)
-    if anchor_node_id not in graph:
-        raise ValueError(f"Node '{anchor_node_id}' does not exist in the call graph.")
+    parsed = ParsedNodeId.parse(anchor_node_id)
 
-    node_ids, edges = _bfs_expand(graph, anchor_node_id, max_depth, max_nodes)
-    summaries = _load_node_summaries(node_ids, workspace_id, database_url, include_source)
+    # STRATEGY 1️⃣: Direct lookup in call graph
+    if anchor_node_id in graph:
+        # Standard path: node is in graph, perform BFS expansion
+        node_ids, edges = _bfs_expand(graph, anchor_node_id, max_depth, max_nodes)
+        summaries = _load_node_summaries(node_ids, workspace_id, database_url, include_source)
+        return _build_subgraph_payload(graph, anchor_node_id, node_ids, edges, summaries)
 
-    return _build_subgraph_payload(graph, anchor_node_id, node_ids, edges, summaries)
+    # STRATEGY 2️⃣: Fallback for method nodes not in graph
+    if parsed.is_method():
+        # Try to retrieve method source code from database
+        method_source = _get_method_source(anchor_node_id, workspace_id, database_url)
+
+        if method_source:
+            # ✅ Found method in database → return its source code
+            node_payload = {
+                "id": anchor_node_id,
+                "title": parsed.method_name,
+                "kind": "method",
+                "category": "method",
+                "file_path": parsed.file_path,
+                "class_name": parsed.class_name,
+                "line_range": f"{method_source['start_line']}-{method_source['end_line']}",
+                "has_source": True,
+                "summary": method_source["docstring"] or f"Method {parsed.method_name}",
+                "summary_source": "docstring" if method_source["docstring"] else "inferred",
+            }
+
+            if method_source["source_code"] and include_source:
+                src = method_source["source_code"].strip()
+                node_payload["source_snippet"] = src[:500] + "..." if len(src) > 500 else src
+
+            if method_source["parameters"]:
+                node_payload["parameters"] = method_source["parameters"]
+
+            return {
+                "anchor": anchor_node_id,
+                "node_count": 1,
+                "edge_count": 0,
+                "nodes": [node_payload],
+                "edges": [],
+                "note": f"Method source code retrieved from database (not in call graph)",
+            }
+
+        # STRATEGY 3️⃣: Method not found, try to get class context
+        if parsed.class_name:
+            class_node_id = parsed.to_class_node_id()
+
+            if class_node_id in graph:
+                # Found the class → return its context with explanatory note
+                node_ids, edges = _bfs_expand(graph, class_node_id, max_depth, max_nodes)
+                summaries = _load_node_summaries(node_ids, workspace_id, database_url, include_source)
+                payload = _build_subgraph_payload(graph, class_node_id, node_ids, edges, summaries)
+                payload["note"] = (
+                    f"Method '{parsed.method_name}' not found in call graph. "
+                    f"Showing class '{parsed.class_name}' context instead."
+                )
+                return payload
+
+    # All strategies failed
+    raise ValueError(
+        f"Node '{anchor_node_id}' not found in call graph or database. "
+        f"Cannot extract subgraph."
+    )
 
 
 def build_extract_subgraph_tool(workspace_id: str, database_url: str | None = None) -> BaseTool:
