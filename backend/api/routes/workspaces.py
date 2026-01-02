@@ -272,15 +272,27 @@ async def _stream_analysis(workspace_id: str) -> AsyncGenerator[str, None]:
     layer_order = plan.get("layer_order", []) if plan else []
     cards = plan.get("component_cards", []) if plan else []
     business_flow = plan.get("business_flow", []) if plan else []
+    token_metrics = plan.get("token_metrics", {}) if plan else {}
 
     # Group components by architecture_layer (ordered by layer_order)
     ranked_components = group_by_layer(cards, layer_order)
     total_components = sum(len(g["components"]) for g in ranked_components)
 
+    # ✨ Include token metrics in the done event
+    event_data = {
+        "system_overview": overview,
+        "ranked_components": ranked_components,
+        "business_flow": business_flow,
+    }
+    # Always include token_metrics if present (not just when truthy, since empty dicts are falsy)
+    if token_metrics is not None and isinstance(token_metrics, dict):
+        event_data["token_metrics"] = token_metrics
+
+    total_tokens = token_metrics.get('total_tokens', 0) if isinstance(token_metrics, dict) else 0
     yield _sse_event(
         "done",
-        f"Found {total_components} components",
-        {"system_overview": overview, "ranked_components": ranked_components, "business_flow": business_flow},
+        f"Found {total_components} components | Used {total_tokens} tokens",
+        event_data,
     )
 
 
@@ -318,12 +330,19 @@ async def get_overview(workspace_id: str):
 
     overview = plan.get("system_overview", {})
     cards = plan.get("component_cards", [])
+    token_metrics = plan.get("token_metrics", {})
 
     def _convert_semantic_metadata(semantic_dict: dict | None) -> SemanticMetadataDTO | None:
         """Convert semantic_metadata from plan to API format."""
         if not semantic_dict:
             return None
         return SemanticMetadataDTO(**semantic_dict)
+
+    # ✨ Convert token_metrics to TokenMetrics object
+    metrics_obj = None
+    if token_metrics:
+        from ..schemas import TokenMetrics
+        metrics_obj = TokenMetrics(**token_metrics)
 
     return WorkspaceOverviewResponse(
         workspace_id=workspace_id,
@@ -343,6 +362,7 @@ async def get_overview(workspace_id: str):
             )
             for c in cards
         ],
+        token_metrics=metrics_obj,
     )
 
 
@@ -411,11 +431,47 @@ def _validate_action_kind(action_kind: str, node_type: str) -> str:
     return action_kind
 
 
+def _batch_validate_target_ids(target_ids: List[Optional[str]], workspace_id: str, database_url: str | None) -> Dict[str, bool]:
+    """Batch validate multiple target_ids in a single database query.
+
+    Returns a dict mapping target_id -> bool (whether it exists).
+    This replaces N individual queries with a single batch query.
+    """
+    # Filter out None values to avoid querying for them
+    ids_to_check = [tid for tid in target_ids if tid]
+    if not ids_to_check:
+        return {}
+
+    try:
+        from structural_scaffolding.database import ProfileRecord, create_session
+        from sqlalchemy import select
+
+        session = create_session(database_url)
+        try:
+            # Single query to fetch all matching records
+            results = session.execute(
+                select(ProfileRecord.id).where(
+                    ProfileRecord.workspace_id == workspace_id,
+                    ProfileRecord.id.in_(ids_to_check),
+                )
+            ).scalars().all()
+
+            # Return set of valid IDs for fast lookup
+            return {tid: True for tid in results}
+        finally:
+            session.close()
+    except Exception:
+        # If validation fails, return empty dict (treat all as invalid to be safe)
+        return {}
+
+
 def _validate_target_id(target_id: Optional[str], workspace_id: str, database_url: str | None) -> Optional[str]:
     """Validate that target_id exists in the database before returning it.
 
     If the node doesn't exist in ProfileRecord, return None to prevent 404 errors.
     The frontend will then use component_drilldown instead of inspect_source.
+
+    Note: For batch validation, use _batch_validate_target_ids() instead.
     """
     if not target_id:
         return None
@@ -484,7 +540,7 @@ def _format_drilldown_response(response, workspace_id: str, cache_id: str, datab
 
         return node_dict
 
-    return {
+    result = {
         "component_id": response.component_id,
         "agent_goal": response.agent_goal,
         "focus_label": response.next_layer.focus_label,
@@ -493,6 +549,17 @@ def _format_drilldown_response(response, workspace_id: str, cache_id: str, datab
         "nodes": [_format_node(n) for n in response.next_layer.nodes],
         "cache_id": new_cache_id,  # Return new cache_id for next drilldown
     }
+
+    # ✨ Include token metrics if present (Scout + Drill combined)
+    if response.token_metrics:
+        result["token_metrics"] = {
+            "prompt_tokens": response.token_metrics.prompt_tokens,
+            "completion_tokens": response.token_metrics.completion_tokens,
+            "total_tokens": response.token_metrics.total_tokens,
+            "estimated_cost": response.token_metrics.estimated_cost,
+        }
+
+    return result
 
 
 async def _stream_drilldown(
@@ -581,4 +648,5 @@ async def drilldown(workspace_id: str, request: DrilldownRequest):
         is_sequential=data["is_sequential"],
         nodes=[NavigationNodeDTO(**n) for n in data["nodes"]],
         cache_id=data["cache_id"],
+        token_metrics=TokenMetrics(**data["token_metrics"]) if data.get("token_metrics") else None,
     )

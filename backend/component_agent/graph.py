@@ -17,7 +17,7 @@ from llm_logger import get_llm_logger
 
 from .llm import build_component_chat_model
 from .prompt import build_component_system_prompt, format_component_request
-from .schemas import ComponentDrilldownRequest, ComponentDrilldownResponse
+from .schemas import ComponentDrilldownRequest, ComponentDrilldownResponse, TokenMetrics
 from .token_tracker import TokenTracker
 from .toolkit import build_workspace_tools
 
@@ -348,6 +348,10 @@ def run_component_agent(
     # Get logger instance for file-based logging
     llm_logger = get_llm_logger()
 
+    # Create or reuse token tracker for both Scout and Drill phases
+    if token_tracker is None:
+        token_tracker = TokenTracker()
+
     # Build tools dynamically for the workspace if not provided
     toolset = list(tools) if tools else build_workspace_tools(request.workspace_id, request.database_url)
     graph = build_component_agent(
@@ -507,6 +511,26 @@ def run_component_agent(
 
     if debug and logger:
         logger(f"[drill:phase:end] Generated response with {len(response.next_layer.nodes)} nodes")
+
+    # === Calculate token metrics from both Scout and Drill phases ===
+    total_prompt_tokens = token_tracker.total_prompt_tokens
+    total_completion_tokens = token_tracker.total_completion_tokens
+    total_tokens = token_tracker.total_tokens
+
+    # Calculate estimated cost (Gemini pricing: 0.075/M input, 0.30/M output)
+    estimated_cost = (total_prompt_tokens * 0.075 + total_completion_tokens * 0.30) / 1_000_000
+
+    if total_tokens > 0:
+        token_metrics = TokenMetrics(
+            prompt_tokens=total_prompt_tokens,
+            completion_tokens=total_completion_tokens,
+            total_tokens=total_tokens,
+            estimated_cost=round(estimated_cost, 6)
+        )
+        response.token_metrics = token_metrics
+
+        if debug and logger:
+            logger(f"[tokens] Scout+Drill: {total_tokens} total ({total_prompt_tokens} input + {total_completion_tokens} output) | Cost: ${estimated_cost:.6f}")
 
     # TODO: Verify that LLM correctly populates semantic_metadata for each node when prompted.
     # The Drill phase prompts (Pattern A/B/C and class-level) now include semantic extraction guidance.

@@ -18,7 +18,7 @@ from llm_logger import get_llm_logger
 
 from .llm import build_orchestration_chat_model
 from .prompt import build_orchestration_system_prompt, build_orchestration_user_prompt
-from .schemas import OrchestrationResponse
+from .schemas import OrchestrationResponse, TokenMetrics
 from .toolkit import build_orchestration_tools
 
 
@@ -235,16 +235,46 @@ def run_orchestration_agent(
     if debug and logger:
         logger(f"[orchestration] ReAct loop completed with {len(final_state['messages'])} messages")
 
+    # ✨ Extract token metrics from all AIMessages
+    total_prompt_tokens = 0
+    total_completion_tokens = 0
+
+    for msg in final_state["messages"]:
+        if isinstance(msg, AIMessage):
+            usage = getattr(msg, "usage_metadata", {})
+            if usage:
+                total_prompt_tokens += usage.get("input_tokens", 0)
+                total_completion_tokens += usage.get("output_tokens", 0)
+
+    total_tokens = total_prompt_tokens + total_completion_tokens
+    estimated_cost = (total_prompt_tokens * 0.075 + total_completion_tokens * 0.30) / 1_000_000
+
+    token_metrics = TokenMetrics(
+        prompt_tokens=total_prompt_tokens,
+        completion_tokens=total_completion_tokens,
+        total_tokens=total_tokens,
+        estimated_cost=round(estimated_cost, 6)
+    )
+
+    if debug and logger:
+        logger(f"[orchestration:tokens] {total_tokens} total ({total_prompt_tokens} input + {total_completion_tokens} output) | Cost: ${estimated_cost:.6f}")
+
     # Parse and validate the response
     response_text = _coerce_text(final_state["messages"][-1].content)
     parsed = _parse_json_from_response(response_text)
 
     if parsed:
         try:
-            return OrchestrationResponse.model_validate(parsed).model_dump()
+            result = OrchestrationResponse.model_validate(parsed)
+            result.token_metrics = token_metrics  # ← Add token metrics to response
+            result_dict = result.model_dump()
+            # Ensure token_metrics is dict form for JSON serialization
+            result_dict["token_metrics"] = token_metrics.model_dump()
+            return result_dict
         except Exception as exc:
             if debug and logger:
                 logger(f"[orchestration] Schema validation failed: {exc}")
+            parsed["token_metrics"] = token_metrics.model_dump()  # ← Add token metrics to fallback response
             return parsed
 
     if debug and logger:
@@ -255,6 +285,7 @@ def run_orchestration_agent(
         "component_cards": [],
         "deprioritised_signals": [],
         "raw_response": response_text,
+        "token_metrics": token_metrics.model_dump()
     }
 
 

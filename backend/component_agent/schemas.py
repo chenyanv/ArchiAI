@@ -275,6 +275,14 @@ class ComponentDrilldownRequest(BaseModel):
         return self.breadcrumbs[-1]
 
 
+class TokenMetrics(BaseModel):
+    """Token usage and cost tracking."""
+    prompt_tokens: int = Field(default=0, description="Number of prompt tokens used")
+    completion_tokens: int = Field(default=0, description="Number of completion tokens used")
+    total_tokens: int = Field(default=0, description="Total tokens used (Scout + Drill)")
+    estimated_cost: float = Field(default=0.0, description="Estimated cost in USD")
+
+
 class ComponentDrilldownResponse(BaseModel):
     component_id: str = Field(..., description="Identifier of the component being analysed.")
     agent_goal: str = Field(..., description="Goal statement authored by the sub-agent for this hop.")
@@ -292,6 +300,10 @@ class ComponentDrilldownResponse(BaseModel):
     raw_response: Optional[str] = Field(
         default=None,
         description="Raw JSON string returned by the LLM for debugging.",
+    )
+    token_metrics: Optional[TokenMetrics] = Field(
+        default=None,
+        description="Token usage metrics from both Scout and Drill phases combined",
     )
 
 
@@ -329,6 +341,7 @@ __all__ = [
     "NextLayerView",
     "NavigationBreadcrumb",
     "ComponentDrilldownRequest",
+    "TokenMetrics",
     "ComponentDrilldownResponse",
     "coerce_subagent_payload",
 ]

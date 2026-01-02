@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback } from "react"
 import { useParams } from "next/navigation"
 import { motion, AnimatePresence } from "framer-motion"
-import { ArrowLeft, Boxes, ChevronRight, Loader2 } from "lucide-react"
+import { ArrowLeft, Boxes, ChevronRight, Loader2, Zap } from "lucide-react"
 import Link from "next/link"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -18,6 +18,7 @@ import {
   type SSEEvent,
   type DrilldownResponse,
   type NavigationNode,
+  type TokenMetrics,
 } from "@/lib/api"
 import {
   ArchitectureGraph,
@@ -34,11 +35,13 @@ type HistoryEntry = {
   type: "root"
   rankedGroups: RankedGroup[]
   cacheId?: string
+  tokenMetrics?: TokenMetrics
 } | {
   type: "drilldown"
   response: DrilldownResponse
   componentCard: Component
   cacheId: string  // Cache ID for this drilldown level
+  tokenMetrics?: TokenMetrics
 }
 
 type AnalysisState = {
@@ -47,6 +50,7 @@ type AnalysisState = {
   overview?: SystemOverview
   rankedGroups?: RankedGroup[]
   businessFlow?: ComponentEdge[]
+  tokenMetrics?: TokenMetrics
   error?: string
 }
 
@@ -90,6 +94,7 @@ export default function WorkspacePage() {
       if (data.status === "done") {
         const rankedGroups = data.data?.ranked_components || []
         const businessFlow = data.data?.business_flow || []
+        const tokenMetrics = data.data?.token_metrics
         setState((prev) => ({
           ...prev,
           status: "done",
@@ -97,6 +102,7 @@ export default function WorkspacePage() {
           overview: data.data?.system_overview,
           rankedGroups,
           businessFlow,
+          tokenMetrics,
         }))
         setHistory([{ type: "root", rankedGroups }])
         eventSource.close()
@@ -155,7 +161,7 @@ export default function WorkspacePage() {
           setError(event.message)
           setDrilldownLoading(false)
         } else if (event.status === "done" && event.data) {
-          setHistory((prev) => [...prev, { type: "drilldown", response: event.data!, componentCard: component, cacheId: event.data!.cache_id }])
+          setHistory((prev) => [...prev, { type: "drilldown", response: event.data!, componentCard: component, cacheId: event.data!.cache_id, tokenMetrics: event.data!.token_metrics }])
           setDrilldownLoading(false)
         } else if (event.status === "thinking") {
           setDrilldownLogs((prev) => prev.includes(event.message) ? prev : [...prev, event.message])
@@ -336,19 +342,34 @@ export default function WorkspacePage() {
                 overview={state.overview!}
                 rankedGroups={currentEntry.rankedGroups}
                 businessFlow={state.businessFlow || []}
+                tokenMetrics={state.tokenMetrics}
                 onComponentClick={handleComponentClick}
                 onComponentSemanticClick={handleComponentSemanticClick}
                 loadingId={loadingNodeKey}
               />
             ) : currentEntry?.type === "drilldown" ? (
-              <DrilldownGraph
-                key={`drilldown-${history.length}`}
-                response={currentEntry.response}
-                componentCard={currentEntry.componentCard}
-                onNodeClick={handleNodeClick}
-                onSemanticClick={handleSemanticClick}
-                loadingId={loadingNodeKey}
-              />
+              <div className="space-y-8">
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                  {currentEntry.tokenMetrics && (
+                    <>
+                      <StatCard
+                        label="Tokens Used"
+                        value={currentEntry.tokenMetrics.total_tokens.toLocaleString()}
+                        icon={Zap}
+                        subtitle={`$${currentEntry.tokenMetrics.estimated_cost.toFixed(4)}`}
+                      />
+                    </>
+                  )}
+                </div>
+                <DrilldownGraph
+                  key={`drilldown-${history.length}`}
+                  response={currentEntry.response}
+                  componentCard={currentEntry.componentCard}
+                  onNodeClick={handleNodeClick}
+                  onSemanticClick={handleSemanticClick}
+                  loadingId={loadingNodeKey}
+                />
+              </div>
             ) : null}
           </AnimatePresence>
         </main>
@@ -372,6 +393,7 @@ function ResultsView({
   overview,
   rankedGroups,
   businessFlow,
+  tokenMetrics,
   onComponentClick,
   onComponentSemanticClick,
   loadingId,
@@ -380,6 +402,7 @@ function ResultsView({
   overview: SystemOverview
   rankedGroups: RankedGroup[]
   businessFlow: ComponentEdge[]
+  tokenMetrics?: TokenMetrics
   onComponentClick: (component: Component) => void
   onComponentSemanticClick: (component: Component) => void
   loadingId: string | null
@@ -407,6 +430,12 @@ function ResultsView({
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <StatCard label="Components" value={totalComponents} icon={Boxes} />
+        <StatCard
+          label="Tokens Used"
+          value={tokenMetrics?.total_tokens ? tokenMetrics.total_tokens.toLocaleString() : "-"}
+          icon={Zap}
+          subtitle={tokenMetrics?.estimated_cost ? `$${tokenMetrics.estimated_cost.toFixed(4)}` : undefined}
+        />
       </div>
 
       <div>

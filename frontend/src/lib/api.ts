@@ -25,6 +25,13 @@ export interface ComponentEdge {
   label?: string
 }
 
+export interface TokenMetrics {
+  prompt_tokens: number
+  completion_tokens: number
+  total_tokens: number
+  estimated_cost: number
+}
+
 // Pre-grouped components by rank (computed by backend)
 export interface RankedGroup {
   rank: number
@@ -39,6 +46,7 @@ export interface SSEEvent {
     system_overview: SystemOverview
     ranked_components: RankedGroup[]
     business_flow?: ComponentEdge[]
+    token_metrics?: TokenMetrics
   }
 }
 
@@ -108,6 +116,7 @@ export interface DrilldownResponse {
   is_sequential: boolean
   nodes: NavigationNode[]
   cache_id: string  // Breadcrumb cache ID for next drilldown
+  token_metrics?: TokenMetrics
 }
 
 export interface DrilldownSSEEvent {

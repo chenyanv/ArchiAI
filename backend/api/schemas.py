@@ -39,6 +39,16 @@ class SemanticMetadataDTO(BaseModel):
     )
 
 
+# === Token Metrics ===
+
+class TokenMetrics(BaseModel):
+    """Token usage and cost tracking."""
+    prompt_tokens: int = Field(default=0, description="Number of prompt tokens used")
+    completion_tokens: int = Field(default=0, description="Number of completion tokens used")
+    total_tokens: int = Field(default=0, description="Total tokens used")
+    estimated_cost: float = Field(default=0.0, description="Estimated cost in USD")
+
+
 # === Analyze ===
 
 class AnalyzeRequest(BaseModel):
@@ -81,6 +91,10 @@ class WorkspaceOverviewResponse(BaseModel):
     workspace_id: str
     system_overview: SystemOverviewDTO
     components: List[ComponentDTO]
+    token_metrics: Optional[TokenMetrics] = Field(
+        default=None,
+        description="Token usage metrics from orchestration phase"
+    )
 
 
 # === Drilldown ===
@@ -128,6 +142,10 @@ class DrilldownResponse(BaseModel):
     is_sequential: bool
     nodes: List[NavigationNodeDTO]
     cache_id: str  # Breadcrumb cache ID for next drilldown
+    token_metrics: Optional[TokenMetrics] = Field(
+        default=None,
+        description="Token usage metrics from this drilldown operation"
+    )
 
 
 # === Source Code ===

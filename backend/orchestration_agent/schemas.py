@@ -84,6 +84,14 @@ class SystemOverview(BaseModel):
     )
 
 
+class TokenMetrics(BaseModel):
+    """Token usage and cost tracking."""
+    prompt_tokens: int = Field(default=0, description="Number of prompt tokens used")
+    completion_tokens: int = Field(default=0, description="Number of completion tokens used")
+    total_tokens: int = Field(default=0, description="Total tokens used")
+    estimated_cost: float = Field(default=0.0, description="Estimated cost in USD")
+
+
 class OrchestrationResponse(BaseModel):
     """Complete response from the orchestration agent."""
     system_overview: SystemOverview = Field(
@@ -106,6 +114,10 @@ class OrchestrationResponse(BaseModel):
         default_factory=list,
         description="Signals that were identified but not prioritized"
     )
+    token_metrics: Optional[TokenMetrics] = Field(
+        default=None,
+        description="Token usage metrics from the orchestration phase"
+    )
 
 
 __all__ = [
@@ -115,5 +127,6 @@ __all__ = [
     "ComponentEdge",
     "DeprioritisedSignal",
     "SystemOverview",
+    "TokenMetrics",
     "OrchestrationResponse",
 ]

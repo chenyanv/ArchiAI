@@ -7,9 +7,10 @@ interface StatCardProps {
   label: string
   value: number | string
   icon: LucideIcon
+  subtitle?: string
 }
 
-export function StatCard({ label, value, icon: Icon }: StatCardProps) {
+export function StatCard({ label, value, icon: Icon, subtitle }: StatCardProps) {
   return (
     <Card>
       <CardContent className="pt-6">
@@ -20,6 +21,7 @@ export function StatCard({ label, value, icon: Icon }: StatCardProps) {
           <div>
             <p className="text-2xl font-bold">{value}</p>
             <p className="text-sm text-zinc-500">{label}</p>
+            {subtitle && <p className="text-xs text-zinc-400 mt-1">{subtitle}</p>}
           </div>
         </div>
       </CardContent>
