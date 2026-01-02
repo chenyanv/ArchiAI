@@ -17,24 +17,11 @@ from component_agent.schemas import SemanticMetadata
 ConfidenceLevel = Literal["high", "medium", "low"]
 
 
-class EntryPointRef(BaseModel):
-    """Reference to an HTTP entry point."""
-    node_id: Optional[str] = Field(default=None, description="Graph node ID")
-    route: Optional[str] = Field(default=None, description="HTTP route path")
-    handler: Optional[str] = Field(default=None, description="Handler function name")
-
-
 class LandmarkRef(BaseModel):
     """Reference to a structural landmark."""
     node_id: Optional[str] = Field(default=None, description="Graph node ID")
     symbol: Optional[str] = Field(default=None, description="Qualified symbol name")
     summary: Optional[str] = Field(default=None, description="Brief description")
-
-
-class CoreModelRef(BaseModel):
-    """Reference to a core data model."""
-    node_id: Optional[str] = Field(default=None, description="Graph node ID")
-    model: Optional[str] = Field(default=None, description="Model class name")
 
 
 class ComponentCard(BaseModel):
@@ -123,9 +110,7 @@ class OrchestrationResponse(BaseModel):
 
 __all__ = [
     "ConfidenceLevel",
-    "EntryPointRef",
     "LandmarkRef",
-    "CoreModelRef",
     "ComponentCard",
     "ComponentEdge",
     "DeprioritisedSignal",
