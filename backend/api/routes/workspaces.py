@@ -509,15 +509,22 @@ def _format_drilldown_response(response, workspace_id: str, cache_id: str, datab
     breadcrumb_dicts = [b.model_dump() for b in response.breadcrumbs]
     new_cache_id = BreadcrumbCache.save_breadcrumbs(workspace_id, breadcrumb_dicts)
 
+    # OPTIMIZATION: Batch validate all target_ids in a single query (was N+1 queries)
+    target_ids = [n.action.target_id for n in response.next_layer.nodes]
+    valid_target_ids = _batch_validate_target_ids(target_ids, workspace_id, database_url)
+
     def _format_node(n):
         """Convert NavigationNode to API dict, including semantic metadata."""
+        # Use pre-validated target_id from batch query
+        target_id = n.action.target_id if n.action.target_id in valid_target_ids else None
+
         node_dict = {
             "node_key": n.node_key,
             "title": n.title,
             "node_type": n.node_type,
             "description": n.description,
             "action_kind": _validate_action_kind(n.action.kind, n.node_type),
-            "target_id": _validate_target_id(n.action.target_id, workspace_id, database_url),
+            "target_id": target_id,
             "action_parameters": n.action.parameters,  # Preserve virtual node context
             "sequence_order": n.sequence_order,
         }

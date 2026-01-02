@@ -67,11 +67,12 @@ function getLayerStyle(layer: string, layerIndex: Map<string, number>): { color:
 
 // Build layer index for consistent coloring
 function buildLayerIndex(components: Component[]): Map<string, number> {
-  const layers: string[] = []
+  const layerSet = new Set<string>()
   for (const c of components) {
     const layer = c.architecture_layer || "other"
-    if (!layers.includes(layer)) layers.push(layer)
+    layerSet.add(layer)
   }
+  const layers = Array.from(layerSet)
   return new Map(layers.map((l, i) => [l, i]))
 }
 
@@ -340,27 +341,11 @@ interface Props {
 export function ArchitectureGraph({ rankedGroups, businessFlow = [], onComponentClick, onComponentSemanticClick, loadingId }: Props) {
   const [nodes, setNodes, onNodesChange] = useNodesState<GraphNode>([])
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([])
-  const totalComponents = rankedGroups.reduce((sum, g) => sum + g.components.length, 0)
-  const [visible, setVisible] = useState(0)
 
-  // Progressive reveal (by component count)
-  useEffect(() => {
-    setVisible(0)
-    const t = setInterval(() => setVisible(v => v >= totalComponents ? (clearInterval(t), v) : v + 1), 100)
-    return () => clearInterval(t)
-  }, [totalComponents])
-
-  // Build visible groups based on component count
-  const visibleGroups = useMemo(() => {
-    let count = 0
-    return rankedGroups.map(group => {
-      const visibleComponents = group.components.filter(() => {
-        count++
-        return count <= visible
-      })
-      return { ...group, components: visibleComponents }
-    }).filter(g => g.components.length > 0)
-  }, [rankedGroups, visible])
+  // OPTIMIZATION: Render all components immediately instead of progressive reveal with 100ms interval
+  // Let framer-motion handle staggered animations (80ms per component via index*0.08 delay)
+  // This eliminates the 5+ second UI delay for large repositories
+  const memoizedGroups = useMemo(() => rankedGroups, [rankedGroups])
 
   // Update graph
   useEffect(() => {
@@ -370,10 +355,10 @@ export function ArchitectureGraph({ rankedGroups, businessFlow = [], onComponent
         onComponentSemanticClick(c)
       }
     }
-    const { nodes: n, edges: e } = buildGraph(visibleGroups, businessFlow, onComponentClick, handleSemanticClick, loadingId)
+    const { nodes: n, edges: e } = buildGraph(memoizedGroups, businessFlow, onComponentClick, handleSemanticClick, loadingId)
     setNodes(n)
     setEdges(e)
-  }, [visibleGroups, businessFlow, onComponentClick, onComponentSemanticClick, loadingId, setNodes, setEdges])
+  }, [memoizedGroups, businessFlow, onComponentClick, onComponentSemanticClick, loadingId, setNodes, setEdges])
 
   // Calculate height based on ranks (pre-grouped by backend)
   const height = useMemo(() => {

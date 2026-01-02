@@ -415,10 +415,16 @@ def run_component_agent(
     if token_tracker:
         token_tracker.track_messages(scout_final_state["messages"])
 
+    # Record Scout phase token usage for diagnostics
+    scout_prompt_tokens = token_tracker.total_prompt_tokens
+    scout_completion_tokens = token_tracker.total_completion_tokens
+    scout_total_tokens = token_tracker.total_tokens
+
     if debug and logger:
         logger("[scout:phase:end] Scout phase completed")
         scout_content_preview = _coerce_text(scout_last_message.content)[:300] if scout_last_message else ""
         logger(f"[scout:output:preview] {scout_content_preview}...")
+        logger(f"[scout:tokens] Scout used: {scout_total_tokens} total ({scout_prompt_tokens} input + {scout_completion_tokens} output)")
 
     # === PHASE 2: DRILL - Autonomous synthesis from Scout findings ===
     if debug and logger:
@@ -440,27 +446,39 @@ def run_component_agent(
             if debug and logger:
                 logger("[drill:pattern:not-found] Using generic Drill prompt")
 
-    # Build Drill phase messages using Scout's complete conversation as context
-    # This eliminates need for fake messages - proper message stack
+    # Build Drill phase messages using Scout's conclusion only
+    # OPTIMIZATION: Only pass Scout's final AI response + original component context
+    # This reduces token usage and speeds up Drill phase (was: passing all Scout messages)
     drill_system_message = SystemMessage(
         content=build_component_system_prompt(phase=Phase.DRILL.value, pattern=pattern_type, focus_node_type=focus_node_type)
     )
 
-    # Drill has access to Scout's conversation, but we must filter out Scout's system message
-    # to avoid "double personality" - two conflicting system instructions
-    # Keep: HumanMessage (component context), AIMessage (Scout's reasoning), ToolMessage (results)
-    # Remove: SystemMessage (Scout's old instructions would confuse Drill)
-    scout_context_messages = [
-        msg for msg in scout_final_state["messages"]
-        if not isinstance(msg, SystemMessage)  # Remove Scout's system prompt
-    ]
+    # Extract Scout's initial human message (component context) - needed for Drill to understand what was analyzed
+    scout_human_message = None
+    for msg in scout_final_state["messages"]:
+        if isinstance(msg, HumanMessage):
+            scout_human_message = msg
+            break  # Get the first HumanMessage (the original request)
 
-    # Build Drill messages with clean history
-    drill_messages: List[BaseMessage] = [drill_system_message] + scout_context_messages
+    # Extract Scout's final AI message (the conclusion with findings)
+    scout_final_conclusion = None
+    for msg in reversed(scout_final_state["messages"]):
+        if isinstance(msg, AIMessage):
+            scout_final_conclusion = msg
+            break  # Get the last AIMessage (Scout's final synthesis)
+
+    # Build Drill messages with minimal but sufficient context
+    # Drill needs: system prompt, original component context, Scout's final conclusion
+    drill_messages: List[BaseMessage] = [drill_system_message]
+    if scout_human_message:
+        drill_messages.append(scout_human_message)
+    if scout_final_conclusion:
+        drill_messages.append(scout_final_conclusion)
 
     if debug and logger:
-        logger(f"[drill:context] Using Scout's {len(scout_context_messages)} context messages (filtered out SystemMessage)")
-        logger(f"[drill:context:structure] Drill System + {len(scout_context_messages)} Scout messages")
+        msg_count = len([m for m in drill_messages if not isinstance(m, SystemMessage)])
+        logger(f"[drill:context] OPTIMIZED: Using only Scout's conclusion + initial context ({msg_count} messages)")
+        logger(f"[drill:context:saved-tokens] Removed {len(scout_final_state['messages']) - msg_count} intermediate Scout messages")
 
     # Use structured output to generate the final response
     # Drill will synthesize based on Scout's findings
@@ -503,6 +521,14 @@ def run_component_agent(
     if token_tracker and raw_message:
         token_tracker.track_messages([raw_message])
 
+    # Record Drill phase token usage for diagnostics
+    drill_prompt_tokens = token_tracker.total_prompt_tokens - scout_prompt_tokens
+    drill_completion_tokens = token_tracker.total_completion_tokens - scout_completion_tokens
+    drill_total_tokens = token_tracker.total_tokens - scout_total_tokens
+
+    if debug and logger:
+        logger(f"[drill:tokens] Drill used: {drill_total_tokens} total ({drill_prompt_tokens} input + {drill_completion_tokens} output)")
+
     # Fill in missing fields if needed
     if not response.component_id:
         response.component_id = str(request.component_card.get("component_id", ""))
@@ -530,7 +556,8 @@ def run_component_agent(
         response.token_metrics = token_metrics
 
         if debug and logger:
-            logger(f"[tokens] Scout+Drill: {total_tokens} total ({total_prompt_tokens} input + {total_completion_tokens} output) | Cost: ${estimated_cost:.6f}")
+            logger(f"[tokens] TOTAL: {total_tokens} tokens ({total_prompt_tokens} input + {total_completion_tokens} output)")
+            logger(f"[tokens] Breakdown -> Scout: {scout_total_tokens}, Drill: {drill_total_tokens} | Cost: ${estimated_cost:.6f}")
 
     # TODO: Verify that LLM correctly populates semantic_metadata for each node when prompted.
     # The Drill phase prompts (Pattern A/B/C and class-level) now include semantic extraction guidance.

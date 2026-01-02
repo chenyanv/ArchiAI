@@ -256,21 +256,11 @@ interface Props {
 export function DrilldownGraph({ response, componentCard, onNodeClick, onSemanticClick, loadingId }: Props) {
   const [nodes, setNodes, onNodesChange] = useNodesState<GraphNode>([])
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([])
-  const [visible, setVisible] = useState(0)
 
-  // Progressive reveal
-  useEffect(() => {
-    setVisible(0)
-    const total = response.nodes.length
-    const t = setInterval(() => setVisible(v => v >= total ? (clearInterval(t), v) : v + 1), 80)
-    return () => clearInterval(t)
-  }, [response.nodes.length])
-
-  // Visible nodes
-  const visibleNodes = useMemo(() =>
-    response.nodes.slice(0, visible),
-    [response.nodes, visible]
-  )
+  // OPTIMIZATION: Render all nodes immediately instead of 80ms progressive reveal
+  // Let framer-motion handle staggered animations (60ms per node via index*0.06 delay)
+  // This eliminates 1.6 second UI delay for 20-node drilldowns
+  const memoizedNodes = useMemo(() => response.nodes, [response.nodes])
 
   // Build graph
   useEffect(() => {
@@ -283,10 +273,10 @@ export function DrilldownGraph({ response, componentCard, onNodeClick, onSemanti
         onSemanticClick(node)
       }
     }
-    const { nodes: n, edges: e } = buildGraph(visibleNodes, response.is_sequential, handleClick, handleSemanticClick, loadingId)
+    const { nodes: n, edges: e } = buildGraph(memoizedNodes, response.is_sequential, handleClick, handleSemanticClick, loadingId)
     setNodes(n)
     setEdges(e)
-  }, [visibleNodes, response.is_sequential, response.cache_id, componentCard, onNodeClick, onSemanticClick, loadingId, setNodes, setEdges])
+  }, [memoizedNodes, response.is_sequential, response.cache_id, componentCard, onNodeClick, onSemanticClick, loadingId, setNodes, setEdges])
 
   // Calculate height based on actual node heights
   const height = useMemo(() => {
