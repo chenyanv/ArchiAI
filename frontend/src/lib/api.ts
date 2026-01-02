@@ -108,6 +108,13 @@ export interface NavigationNode {
   business_narrative?: string  // Story explaining this node's role
 }
 
+export interface NodeRelationship {
+  from_node_key: string
+  to_node_key: string
+  relationship_type: string  // e.g., "calls", "contains", "uses", "depends_on"
+  flow_label?: string  // Optional label to display on edge
+}
+
 export interface DrilldownResponse {
   component_id: string
   agent_goal: string
@@ -115,6 +122,7 @@ export interface DrilldownResponse {
   rationale: string
   is_sequential: boolean
   nodes: NavigationNode[]
+  relationships?: NodeRelationship[]  // Optional relationships for graph visualization
   breadcrumbs: NavigationBreadcrumb[]  // Updated navigation path from backend
   cache_id: string  // Cache ID for next drilldown
   token_metrics?: TokenMetrics

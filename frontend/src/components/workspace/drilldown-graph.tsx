@@ -12,14 +12,16 @@ import {
   Position,
   Handle,
   type NodeProps,
+  type EdgeProps,
   MarkerType,
   getSmoothStepPath,
   BaseEdge,
+  EdgeLabelRenderer,
 } from "@xyflow/react"
 import "@xyflow/react/dist/style.css"
 import { motion } from "framer-motion"
-import { FileCode, FolderOpen, Box, Workflow, Database, Globe, Cpu, ChevronRight, Loader2, Search, Code2, Info } from "lucide-react"
-import { type NavigationNode, type DrilldownResponse, type Component } from "@/lib/api"
+import { FileCode, FolderOpen, Box, Workflow, Database, Globe, Cpu, ChevronRight, Loader2, Search, Code2, Info, ArrowRight } from "lucide-react"
+import { type NavigationNode, type NodeRelationship, type DrilldownResponse, type Component } from "@/lib/api"
 
 // === Constants ===
 
@@ -74,6 +76,7 @@ function getNodeStyle(nodeType: string): { color: string; bg: string; Icon: type
 
 function buildGraph(
   nodes: NavigationNode[],
+  relationships: NodeRelationship[] | undefined,
   isSequential: boolean,
   onClick: (node: NavigationNode) => void,
   onSemanticClick: (node: NavigationNode, e: React.MouseEvent) => void,
@@ -84,7 +87,111 @@ function buildGraph(
   const graphNodes: GraphNode[] = []
   const edges: Edge[] = []
 
-  if (isSequential) {
+  // If relationships exist, use relationship-based layout, otherwise use sequential/grid
+  const hasRelationships = relationships && relationships.length > 0
+
+  if (hasRelationships) {
+    // Relationship graph layout - compute positions using simple hierarchical layout
+    const nodeHeights = new Map<string, number>(nodes.map(n => [n.node_key, estimateNodeHeight(n.description)]))
+
+    // Build adjacency for layout algorithm
+    const inDegree = new Map<string, number>()
+    const outDegree = new Map<string, number>()
+    nodes.forEach(n => {
+      inDegree.set(n.node_key, 0)
+      outDegree.set(n.node_key, 0)
+    })
+
+    relationships.forEach(rel => {
+      outDegree.set(rel.from_node_key, (outDegree.get(rel.from_node_key) || 0) + 1)
+      inDegree.set(rel.to_node_key, (inDegree.get(rel.to_node_key) || 0) + 1)
+    })
+
+    // Simple hierarchical layout: root nodes on left, progressively to right
+    const levels = new Map<string, number>()
+    const visited = new Set<string>()
+
+    function assignLevel(nodeKey: string, level: number) {
+      if (visited.has(nodeKey)) return
+      visited.add(nodeKey)
+      levels.set(nodeKey, Math.max(levels.get(nodeKey) || 0, level))
+
+      relationships?.forEach(rel => {
+        if (rel.from_node_key === nodeKey) {
+          assignLevel(rel.to_node_key, level + 1)
+        }
+      })
+    }
+
+    // Start from nodes with no incoming edges
+    nodes.forEach(n => {
+      if (!inDegree.has(n.node_key) || inDegree.get(n.node_key) === 0) {
+        assignLevel(n.node_key, 0)
+      }
+    })
+
+    // For remaining unassigned nodes, assign them
+    nodes.forEach(n => {
+      if (!levels.has(n.node_key)) {
+        assignLevel(n.node_key, 0)
+      }
+    })
+
+    // Group nodes by level
+    const levelGroups = new Map<number, NavigationNode[]>()
+    nodes.forEach(n => {
+      const level = levels.get(n.node_key) || 0
+      if (!levelGroups.has(level)) levelGroups.set(level, [])
+      levelGroups.get(level)!.push(n)
+    })
+
+    // Position nodes
+    levelGroups.forEach((nodesAtLevel, level) => {
+      const x = level * 500 + 40
+      let y = 40
+
+      nodesAtLevel.forEach((node) => {
+        const height = nodeHeights.get(node.node_key) || 80
+        const style = getNodeStyle(node.node_type)
+
+        graphNodes.push({
+          id: node.node_key,
+          type: "drilldown",
+          position: { x, y },
+          data: {
+            node,
+            onClick: () => onClick(node),
+            onSemanticClick: (e) => onSemanticClick(node, e),
+            isLoading: loadingId === node.node_key,
+            index: nodes.indexOf(node),
+            style,
+            isSequential: false,
+            isLast: false,
+          },
+        } as GraphNode)
+
+        y += height + LAYOUT.gapY
+      })
+    })
+
+    // Add relationship edges
+    relationships.forEach((rel, idx) => {
+      edges.push({
+        id: `rel-${idx}`,
+        source: rel.from_node_key,
+        target: rel.to_node_key,
+        type: "smoothstep",
+        animated: true,
+        label: rel.flow_label,
+        style: {
+          stroke: "#9ca3af",
+          strokeWidth: 1.5,
+          strokeDasharray: "4 2"
+        },
+        markerEnd: { type: MarkerType.ArrowClosed, color: "#9ca3af" },
+      })
+    })
+  } else if (isSequential) {
     // Vertical sequential layout with dynamic heights
     let y = 40
     nodes.forEach((node, i) => {
@@ -273,19 +380,26 @@ export function DrilldownGraph({ response, componentCard, onNodeClick, onSemanti
         onSemanticClick(node)
       }
     }
-    const { nodes: n, edges: e } = buildGraph(memoizedNodes, response.is_sequential, handleClick, handleSemanticClick, loadingId)
+    const { nodes: n, edges: e } = buildGraph(memoizedNodes, response.relationships, response.is_sequential, handleClick, handleSemanticClick, loadingId)
     setNodes(n)
     setEdges(e)
-  }, [memoizedNodes, response.is_sequential, response.cache_id, componentCard, onNodeClick, onSemanticClick, loadingId, setNodes, setEdges])
+  }, [memoizedNodes, response.relationships, response.is_sequential, response.cache_id, componentCard, onNodeClick, onSemanticClick, loadingId, setNodes, setEdges])
 
   // Calculate height based on actual node heights
   const height = useMemo(() => {
     if (response.nodes.length === 0) return 400
+
+    // For relationship graph, add extra width for horizontal layout
+    const hasRelationships = response.relationships && response.relationships.length > 0
+    if (hasRelationships) {
+      return Math.max(600, response.nodes.length * 150)
+    }
+
     const gap = response.is_sequential ? LAYOUT.seqGapY : LAYOUT.gapY
     const totalHeight = response.nodes.reduce((sum, node) =>
       sum + estimateNodeHeight(node.description) + gap, 0)
     return Math.max(400, totalHeight + 80)
-  }, [response.nodes, response.is_sequential])
+  }, [response.nodes, response.relationships, response.is_sequential])
 
   return (
     <div className="space-y-4">

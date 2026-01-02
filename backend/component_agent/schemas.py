@@ -213,19 +213,43 @@ class NavigationNode(BaseModel):
         return action
 
 
+class NodeRelationship(BaseModel):
+    """A directed relationship between two navigation nodes in the current layer."""
+    from_node_key: str = Field(
+        ...,
+        description="Unique identifier of the source node (kebab-case, must exist in nodes list).",
+    )
+    to_node_key: str = Field(
+        ...,
+        description="Unique identifier of the target node (kebab-case, must exist in nodes list).",
+    )
+    relationship_type: str = Field(
+        default="calls",
+        description="Type of relationship: 'calls', 'contains', 'uses', 'depends_on', 'triggers', 'returns_to', etc.",
+    )
+    flow_label: Optional[str] = Field(
+        default=None,
+        description="Optional label to display on the edge (e.g., 'invokes with params', 'receives result').",
+    )
+
+
 class NextLayerView(BaseModel):
     focus_label: str = Field(..., description="Human readable label of the current focus.")
     focus_kind: str = Field(..., description="What the agent considers this focus to be.")
     rationale: str = Field(..., description="Why the agent picked the current breakdown strategy.")
     nodes: List[NavigationNode] = Field(
         ..., description="Proposed next-layer nodes presented to the user.")
+    relationships: List[NodeRelationship] = Field(
+        default_factory=list,
+        description="Optional relationships between nodes for graph visualization. When present, enables edge rendering.",
+    )
     workflow_narrative: Optional[str] = Field(
         default=None,
         description="1-3 sentence description of how these nodes form a workflow or process.",
     )
     is_sequential: bool = Field(
         default=False,
-        description="True if nodes should be displayed as a sequential flow diagram.",
+        description="True if nodes should be displayed as a sequential flow diagram. Ignored if relationships are present.",
     )
 
     @model_validator(mode="after")
@@ -338,6 +362,7 @@ __all__ = [
     "SemanticMetadata",
     "NavigationAction",
     "NavigationNode",
+    "NodeRelationship",
     "NextLayerView",
     "NavigationBreadcrumb",
     "ComponentDrilldownRequest",
