@@ -139,6 +139,8 @@ def _analyze_inheritance_scope(
     graph = get_graph(workspace_id, database_url)
     # Use database query to find classes - guarantees all have source code
     classes_in_scope = _find_classes_in_scope_from_db(workspace_id, database_url, scope_path)
+    if classes_in_scope:
+        print(f"[inheritance:classes_in_scope] Found {len(classes_in_scope)} classes: {classes_in_scope[:5]}", flush=True)
 
     if not classes_in_scope:
         return {
@@ -182,6 +184,12 @@ def _analyze_inheritance_scope(
     count = inheritance_counts[dominant_base]
 
     implementations = _get_implementations(graph, dominant_base, workspace_id, database_url)
+    print(f"[inheritance:implementations] Found {len(implementations)} implementations", flush=True)
+    if implementations:
+        for impl in implementations[:3]:
+            impl_id = impl.get("id", "unknown")
+            impl_label = impl.get("label", "unknown")
+            print(f"  - {impl_label} -> id: {impl_id}", flush=True)
 
     return {
         "success": True,

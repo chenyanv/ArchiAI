@@ -20,8 +20,8 @@ from component_agent.schemas import (
     NavigationBreadcrumb,
     coerce_subagent_payload,
 )
-from drilldown_cache import BreadcrumbCache
 from orchestration_agent.graph import run_orchestration_agent
+import uuid
 from workspace import WorkspaceManager
 
 from ..schemas import (
@@ -31,6 +31,7 @@ from ..schemas import (
     NavigationNodeDTO,
     SemanticMetadataDTO,
     SystemOverviewDTO,
+    TokenMetrics,
     WorkspaceOverviewResponse,
 )
 
@@ -374,16 +375,12 @@ def _build_drilldown_request(
 ) -> Tuple[ComponentDrilldownRequest, str]:
     """Build a ComponentDrilldownRequest from API inputs.
 
-    Returns (request, cache_id) tuple. If cache_id not provided, uses breadcrumbs list.
-    If cache_id provided, loads breadcrumbs from cache and returns potentially updated cache_id.
+    Returns (request, cache_id) tuple. Cache_id is now a throwaway value for frontend compatibility.
+    Frontend manages breadcrumbs state directly and sends them in the request.
     If clicked_node provided, appends it to breadcrumbs to track drilldown path.
     """
-    # Load breadcrumbs from cache if cache_id provided
-    if cache_id:
-        loaded = BreadcrumbCache.load_breadcrumbs(workspace_id, cache_id)
-        if loaded is None:
-            raise ValueError(f"Cache {cache_id} not found or expired")
-        breadcrumbs = loaded
+    # OPTIMIZATION: No Redis caching - frontend sends breadcrumbs directly in request
+    # cache_id parameter is ignored; frontend manages all breadcrumb state
 
     # If user clicked a node, add it to breadcrumbs to track drilldown depth
     if clicked_node:
@@ -415,8 +412,9 @@ def _build_drilldown_request(
         database_url=database_url,
     )
 
-    # Save updated breadcrumbs to cache and return cache_id
-    current_cache_id = BreadcrumbCache.save_breadcrumbs(workspace_id, breadcrumbs)
+    # OPTIMIZATION: No Redis needed - frontend manages breadcrumbs state
+    # Generate throwaway cache_id for compatibility with frontend drilldown-graph component
+    current_cache_id = f"breadcrumbs_{uuid.uuid4().hex[:12]}"
     return request, current_cache_id
 
 
@@ -501,13 +499,13 @@ def _format_drilldown_response(response, workspace_id: str, cache_id: str, datab
 
     Args:
         response: Agent response
-        workspace_id: Workspace ID for cache storage
-        cache_id: Current cache ID for breadcrumbs
+        workspace_id: Workspace ID
+        cache_id: Current cache ID (unused - frontend manages breadcrumbs state)
         database_url: Database URL for validating target_ids
     """
-    # Save agent's updated breadcrumbs to cache to get new cache_id for next drilldown
-    breadcrumb_dicts = [b.model_dump() for b in response.breadcrumbs]
-    new_cache_id = BreadcrumbCache.save_breadcrumbs(workspace_id, breadcrumb_dicts)
+    # OPTIMIZATION: No Redis caching needed - frontend manages breadcrumbs state directly
+    # Generate throwaway cache_id for compatibility with frontend drilldown-graph component
+    new_cache_id = f"breadcrumbs_{uuid.uuid4().hex[:12]}"
 
     # OPTIMIZATION: Batch validate all target_ids in a single query (was N+1 queries)
     target_ids = [n.action.target_id for n in response.next_layer.nodes]

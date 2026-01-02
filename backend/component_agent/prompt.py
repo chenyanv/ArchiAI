@@ -799,7 +799,7 @@ When ready, respond with a `next_layer` object in ComponentDrilldownResponse for
 - **`action.kind` MUST be determined by node_type:**
   - Use `"component_drilldown"` for: **class** (allows further drilling into the inner class)
   - Use `"inspect_source"` for: function, source (show implementation or data definition)
-- `target_id`: Include the structural graph node ID if available from Scout's results, otherwise null
+- `target_id`: Use COMPLETE node IDs from Scout's results in format `python::path/to/file.py::ClassName`, or `null` if not available
 - `parameters`: Use {{}} (empty dict)
 - `sequence_order`: Omit unless elements form a sequential workflow
 
@@ -999,7 +999,12 @@ VIOLATION OF THIS RULE WILL CAUSE "UNKNOWN ACTION" ERRORS ON THE FRONTEND.
 - **No tool calls** - You have all the information you need from Scout's investigation
 - **Generate proper node_key** - Use kebab-case conversion of class names (VisionParser → vision-parser)
 - **Set action.kind correctly** - Classes use "component_drilldown", functions/methods use "inspect_source"
-- **Set target_id** - Use the node ID from the graph if available from Scout's results
+- **⚠️ CRITICAL: Set target_id with COMPLETE node IDs ONLY** - Use EXACTLY the node ID from Scout's graph analysis
+  - Format: `python::path/to/file.py::ClassName` (must include file path AND class name)
+  - DO NOT simplify or truncate class names (use `RAGFlowDocxParser`, NOT `DocxParser`)
+  - DO NOT fabricate IDs - if Scout didn't return it, use `null` instead
+  - Example: `python::deepdoc/parser/pdf_parser.py::RAGFlowPdfParser` ✓ (from graph)
+  - Example: `null` ✓ (if not found in Scout's results)
 
 When you have analyzed the inheritance graph and identified all architectural elements, generate the structured JSON response with the complete list of nodes."""
 
@@ -1359,7 +1364,7 @@ VIOLATION OF THIS RULE WILL CAUSE "UNKNOWN ACTION" ERRORS ON THE FRONTEND.
 - **No tool calls** - You have all the information you need from Scout's investigation
 - **Generate proper node_key** - Use kebab-case conversion of endpoint/handler names
 - **Set action.kind correctly** - Service/category types use "component_drilldown", functions use "inspect_source"
-- **Set target_id** - Include the node ID from the graph for each API handler if available
+- **Set target_id** - Use COMPLETE node IDs from Scout's analysis in format `python::path/to/file.py::HandlerClassName`, or `null` if unavailable (DO NOT abbreviate class names)
 
 When you have analyzed the entry points and categorized the API operations, generate the structured JSON response with all significant endpoints or functional domains."""
 

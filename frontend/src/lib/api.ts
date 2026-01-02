@@ -115,7 +115,8 @@ export interface DrilldownResponse {
   rationale: string
   is_sequential: boolean
   nodes: NavigationNode[]
-  cache_id: string  // Breadcrumb cache ID for next drilldown
+  breadcrumbs: NavigationBreadcrumb[]  // Updated navigation path from backend
+  cache_id: string  // Cache ID for next drilldown
   token_metrics?: TokenMetrics
 }
 
@@ -163,7 +164,8 @@ export async function drilldownStream(
   componentCard: Component,
   cacheId?: string,
   onMessage?: (event: DrilldownSSEEvent) => void,
-  clickedNode?: NavigationNode
+  clickedNode?: NavigationNode,
+  breadcrumbs?: NavigationBreadcrumb[]
 ): Promise<void> {
   const res = await fetch(`${API_BASE}/api/workspaces/${workspaceId}/drilldown/stream`, {
     method: "POST",
@@ -178,7 +180,7 @@ export async function drilldownStream(
         target_id: clickedNode.target_id,
         action_parameters: clickedNode.action_parameters,
       } : undefined,
-      breadcrumbs: [],  // Breadcrumbs loaded from cache_id on backend
+      breadcrumbs: breadcrumbs || [],  // Frontend passes complete navigation path
     }),
   })
 

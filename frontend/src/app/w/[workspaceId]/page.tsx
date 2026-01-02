@@ -19,6 +19,7 @@ import {
   type DrilldownResponse,
   type NavigationNode,
   type TokenMetrics,
+  type NavigationBreadcrumb,
 } from "@/lib/api"
 import {
   ArchitectureGraph,
@@ -156,6 +157,26 @@ export default function WorkspacePage() {
     setError(null)
 
     try {
+      // Build breadcrumbs path from current history + clicked node
+      const breadcrumbs: NavigationBreadcrumb[] = []
+
+      // Extract breadcrumbs from all previous drilldown responses
+      for (const entry of history) {
+        if (entry.type === "drilldown" && entry.response.breadcrumbs) {
+          breadcrumbs.push(...entry.response.breadcrumbs)
+        }
+      }
+
+      // If clicking on a node, add it to breadcrumbs for next level
+      if (clickedNode) {
+        breadcrumbs.push({
+          node_key: clickedNode.node_key,
+          title: clickedNode.title,
+          node_type: clickedNode.node_type,
+          target_id: clickedNode.target_id,
+        })
+      }
+
       await drilldownStream(workspaceId, component, cacheId, (event) => {
         if (event.status === "error") {
           setError(event.message)
@@ -166,7 +187,7 @@ export default function WorkspacePage() {
         } else if (event.status === "thinking") {
           setDrilldownLogs((prev) => prev.includes(event.message) ? prev : [...prev, event.message])
         }
-      }, clickedNode)
+      }, clickedNode, breadcrumbs)
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to drill down")
       setDrilldownLoading(false)
@@ -174,7 +195,7 @@ export default function WorkspacePage() {
       setLoading(false)
       setLoadingNodeKey(null)
     }
-  }, [workspaceId])
+  }, [workspaceId, history])
 
   const handleComponentClick = useCallback(async (component: Component) => {
     setLoadingNodeKey(component.component_id)
