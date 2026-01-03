@@ -733,7 +733,12 @@ Your response should be the ComponentDrilldownResponse JSON structure:
 - **`action.kind` MUST be determined by `node_type`:**
   - Use `"component_drilldown"` for: class, module, workflow, capability, category, service
   - Use `"inspect_source"` for: function, file, method, tool, and all other types
-- `action.target_id`: Include the structural graph node ID if the element exists in the graph, otherwise null
+- `action.target_id`: **COPY the "id" field from Scout's results exactly as-is, do NOT modify**
+  - **EXACT FORMAT:** `python::path/to/file.py::ClassName` or `python::path/to/file.py::function_name`
+  - Scout tools return an "id" field - COPY IT EXACTLY WITHOUT ANY CHANGES
+  - **DO NOT add "::class::" or "::kind::" or "::method::" prefixes** - these are not part of node IDs
+  - **DO NOT convert dots to slashes** - copy the path exactly as Scout returned it
+  - Use `null` if Scout didn't return an id for this element
 - `action.parameters`: Use {} (empty dict) unless you have virtual node grouping context
 - `sequence_order`: Only set if the nodes form a sequential workflow (0-indexed), otherwise omit
 
@@ -1115,12 +1120,25 @@ VIOLATION OF THIS RULE WILL CAUSE "UNKNOWN ACTION" ERRORS ON THE FRONTEND.
 - **No tool calls** - You have all the information you need from Scout's investigation
 - **Generate proper node_key** - Use kebab-case conversion of class names (VisionParser → vision-parser)
 - **Set action.kind correctly** - Classes use "component_drilldown", functions/methods use "inspect_source"
-- **⚠️ CRITICAL: Set target_id with COMPLETE node IDs ONLY** - Use EXACTLY the node ID from Scout's graph analysis
-  - Format: `python::path/to/file.py::ClassName` (must include file path AND class name)
-  - DO NOT simplify or truncate class names (use `RAGFlowDocxParser`, NOT `DocxParser`)
-  - DO NOT fabricate IDs - if Scout didn't return it, use `null` instead
-  - Example: `python::deepdoc/parser/pdf_parser.py::RAGFlowPdfParser` ✓ (from graph)
-  - Example: `null` ✓ (if not found in Scout's results)
+- **⚠️ CRITICAL: Set target_id CORRECTLY** - COPY the "id" field from Scout's results WITHOUT modification
+  - **EXACT FORMAT:** `python::path/to/file.py::ClassName`
+  - Scout tools return nodes with an "id" field - COPY IT EXACTLY AS-IS
+  - **DO NOT EVER add "::kind::" or "::class::" or "::method::" prefixes** - these are NOT part of the node ID
+  - **DO NOT add the node's "kind" field to the target_id** - the kind (class, method, function) is separate metadata
+  - **DO NOT convert dots to anything else** - the path uses `/` for folders (deepdoc/parser, NOT deepdoc.parser)
+  - **DO NOT truncate class names** - use complete names from Scout (RAGFlowDocxParser, NOT DocxParser)
+  - **DO NOT fabricate IDs** - if Scout didn't return it, use `null`
+
+  **CORRECT EXAMPLES (from actual Scout results):**
+  - `python::deepdoc/parser/pdf_parser.py::RAGFlowPdfParser` ✓ Copy "id" field as-is
+  - `python::ragflow/orchestrator/workflow.py::WorkflowExecutor` ✓ Copy from Scout's results
+  - `null` ✓ When element not found in Scout results
+
+  **WRONG EXAMPLES (DO NOT USE):**
+  - `python::class::deepdoc.parser.pdf_parser.RAGFlowPdfParser` ✗ Has "::class::" prefix
+  - `python::deepdoc.parser.pdf_parser::RAGFlowPdfParser` ✗ Has dots instead of slashes
+  - `python::method::path::to::MyClass::my_method` ✗ Has "::method::" prefix
+  - `deepdoc.parser.pdf_parser.RAGFlowPdfParser` ✗ Missing "python::" prefix and has dots
 
 When you have analyzed the inheritance graph and identified all architectural elements, generate the structured JSON response with the complete list of nodes."""
 
@@ -1303,6 +1321,18 @@ VIOLATION OF THIS RULE WILL CAUSE "UNKNOWN ACTION" ERRORS ON THE FRONTEND.
 - **Generate proper node_key** - Use kebab-case conversion of function/class names
 - **Set action.kind correctly** - Classes/workflows use "component_drilldown", functions use "inspect_source"
 - **Set sequence_order** - If nodes form a workflow sequence, order them 0, 1, 2, etc.
+- **⚠️ CRITICAL: Set target_id CORRECTLY** - COPY the "id" field from Scout's results WITHOUT modification
+  - **EXACT FORMAT:** `python::path/to/file.py::ClassName` or `python::path/to/file.py::function_name`
+  - Scout tools return nodes with an "id" field - COPY IT EXACTLY AS-IS
+  - **DO NOT EVER add "::kind::" or "::class::" or "::method::" or "::function::" prefixes** - these are NOT part of the node ID
+  - **DO NOT add the node's "kind" field to the target_id** - the kind is separate metadata
+  - **DO NOT convert dots to slashes** - copy the path as-is from Scout results
+  - **DO NOT fabricate IDs** - if Scout didn't return it, use `null`
+
+  **CORRECT EXAMPLES:**
+  - `python::agent/executor/router.py::TaskRouter` ✓ Copy "id" as-is
+  - `python::utils/helpers.py::process_data` ✓ Function-level node ID
+  - `null` ✓ When element not found in Scout results
 
 When you have analyzed the execution paths and identified all workflow components, generate the structured JSON response with the complete list of orchestration elements and handlers."""
 
@@ -1480,7 +1510,17 @@ VIOLATION OF THIS RULE WILL CAUSE "UNKNOWN ACTION" ERRORS ON THE FRONTEND.
 - **No tool calls** - You have all the information you need from Scout's investigation
 - **Generate proper node_key** - Use kebab-case conversion of endpoint/handler names
 - **Set action.kind correctly** - Service/category types use "component_drilldown", functions use "inspect_source"
-- **Set target_id** - Use COMPLETE node IDs from Scout's analysis in format `python::path/to/file.py::HandlerClassName`, or `null` if unavailable (DO NOT abbreviate class names)
+- **⚠️ CRITICAL: Set target_id CORRECTLY** - COPY the "id" field from Scout's results WITHOUT modification
+  - **EXACT FORMAT:** `python::path/to/file.py::HandlerClassName`
+  - Scout tools return nodes with an "id" field - COPY IT EXACTLY AS-IS
+  - **DO NOT EVER add "::kind::" or "::class::" or "::method::" prefixes** - these are NOT part of the node ID
+  - **DO NOT abbreviate class names** - use complete names from Scout (AuthenticationHandler, not AuthHandler)
+  - **DO NOT fabricate IDs** - if Scout didn't return it, use `null`
+
+  **CORRECT EXAMPLES:**
+  - `python::api/routes/auth.py::AuthHandler` ✓ Copy "id" as-is
+  - `python::api/handlers/document.py::DocumentProcessor` ✓ Complete class name
+  - `null` ✓ When element not found in Scout results
 
 When you have analyzed the entry points and categorized the API operations, generate the structured JSON response with all significant endpoints or functional domains."""
 

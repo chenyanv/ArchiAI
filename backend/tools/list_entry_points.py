@@ -304,7 +304,7 @@ def _filter_entry_points(
 
 
 def _entry_point_to_payload(entry: _EntryPointRecord, *, include_docstring: bool) -> Dict[str, Any]:
-    node_id = entry.call_graph_id or f"python::{entry.file_path.replace('/', '::')}::{entry.function_name}"
+    node_id = entry.call_graph_id or f"python::{entry.file_path}::{entry.function_name}"
     payload: Dict[str, Any] = {
         "symbol": entry.symbol,
         "qualified_name": entry.qualified_name,

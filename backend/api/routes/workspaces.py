@@ -429,14 +429,88 @@ def _validate_action_kind(action_kind: str, node_type: str) -> str:
     return action_kind
 
 
+def _normalize_target_id(target_id: str) -> str:
+    """Normalize malformed target_ids to correct format.
+
+    Fixes common issues like:
+    - python::class::deepdoc.parser.pdf_parser.RAGFlowPdfParser
+    → python::deepdoc/parser/pdf_parser.py::RAGFlowPdfParser
+
+    Returns the normalized target_id or original if normalization not needed.
+    """
+    if not target_id or not target_id.startswith("python::"):
+        return target_id
+
+    # Remove the "python::" prefix for processing
+    rest = target_id[8:]  # len("python::") == 8
+
+    # Check if it starts with a malformed type marker (class::, method::, function::)
+    for type_marker in ["class::", "method::", "function::"]:
+        if rest.startswith(type_marker):
+            # Skip the type marker
+            path_and_class = rest[len(type_marker):]  # e.g., "deepdoc.parser.pdf_parser.RAGFlowPdfParser"
+
+            # Try to split into file path and class name
+            # Heuristic: class names start with uppercase
+            segments = path_and_class.split(".")
+
+            # Find the last segment that starts with uppercase (likely the class name)
+            class_idx = -1
+            for i in range(len(segments) - 1, -1, -1):
+                if segments[i] and segments[i][0].isupper():
+                    class_idx = i
+                    break
+
+            if class_idx > 0:
+                # Join everything before class_idx as file path with / separators
+                file_path_segments = segments[:class_idx]
+                class_name = ".".join(segments[class_idx:])  # In case class name has dots
+
+                file_path = "/".join(file_path_segments) + ".py"
+                normalized = f"python::{file_path}::{class_name}"
+                return normalized
+
+    # Check if path uses dots instead of slashes (python::deepdoc.parser.pdf_parser::ClassName)
+    if "::" in rest:
+        parts = rest.split("::")
+        if len(parts) >= 2:
+            # First part should be file path, convert dots to slashes
+            file_part = parts[0]
+            rest_parts = parts[1:]
+
+            # Check if file_part has dots (likely needs conversion)
+            if "." in file_part and "/" not in file_part:
+                # Convert dots to slashes and add .py if needed
+                if not file_part.endswith(".py"):
+                    segments = file_part.split(".")
+                    # If we have rest_parts (class names), then all of file_part is the path
+                    if rest_parts:
+                        file_part = "/".join(segments) + ".py"
+                        normalized = f"python::{file_part}::{rest_parts[0]}"
+                        return normalized
+
+    return target_id
+
+
 def _batch_validate_target_ids(target_ids: List[Optional[str]], workspace_id: str, database_url: str | None) -> Dict[str, bool]:
     """Batch validate multiple target_ids in a single database query.
 
     Returns a dict mapping target_id -> bool (whether it exists).
     This replaces N individual queries with a single batch query.
     """
+    # Normalize any malformed target_ids first
+    normalized_ids = []
+    normalization_map = {}  # Maps original to normalized
+
+    for tid in target_ids:
+        if tid:
+            normalized = _normalize_target_id(tid)
+            normalized_ids.append(normalized)
+            if normalized != tid:
+                normalization_map[tid] = normalized
+
     # Filter out None values to avoid querying for them
-    ids_to_check = [tid for tid in target_ids if tid]
+    ids_to_check = [tid for tid in normalized_ids if tid]
     if not ids_to_check:
         return {}
 
@@ -474,6 +548,9 @@ def _validate_target_id(target_id: Optional[str], workspace_id: str, database_ur
     if not target_id:
         return None
 
+    # Normalize malformed target_ids first
+    normalized = _normalize_target_id(target_id)
+
     try:
         from structural_scaffolding.database import ProfileRecord, create_session
         from sqlalchemy import select
@@ -483,10 +560,10 @@ def _validate_target_id(target_id: Optional[str], workspace_id: str, database_ur
             exists = session.execute(
                 select(ProfileRecord).where(
                     ProfileRecord.workspace_id == workspace_id,
-                    ProfileRecord.id == target_id,
+                    ProfileRecord.id == normalized,
                 )
             ).scalar_one_or_none()
-            return target_id if exists else None
+            return normalized if exists else None
         finally:
             session.close()
     except Exception:
@@ -513,8 +590,11 @@ def _format_drilldown_response(response, workspace_id: str, cache_id: str, datab
 
     def _format_node(n):
         """Convert NavigationNode to API dict, including semantic metadata."""
-        # Use pre-validated target_id from batch query
-        target_id = n.action.target_id if n.action.target_id in valid_target_ids else None
+        # Normalize and validate target_id
+        original_target_id = n.action.target_id
+        normalized_target_id = _normalize_target_id(original_target_id) if original_target_id else None
+        # Use normalized target_id if it exists in valid_target_ids, otherwise None
+        target_id = normalized_target_id if normalized_target_id and normalized_target_id in valid_target_ids else None
 
         node_dict = {
             "node_key": n.node_key,
