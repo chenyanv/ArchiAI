@@ -697,7 +697,8 @@ Your response should be the ComponentDrilldownResponse JSON structure:
         "description": "1-2 sentences explaining this element's role",
         "action": {
           "kind": "component_drilldown",
-          "target_id": "node_id_from_graph_or_null",
+          "action_file_path": "api/routes.py",
+          "action_symbol": "RequestHandler",
           "parameters": {}
         },
         "semantic_metadata": {
@@ -733,12 +734,15 @@ Your response should be the ComponentDrilldownResponse JSON structure:
 - **`action.kind` MUST be determined by `node_type`:**
   - Use `"component_drilldown"` for: class, module, workflow, capability, category, service
   - Use `"inspect_source"` for: function, file, method, tool, and all other types
-- `action.target_id`: **COPY the "id" field from Scout's results exactly as-is, do NOT modify**
-  - **EXACT FORMAT:** `python::path/to/file.py::ClassName` or `python::path/to/file.py::function_name`
-  - Scout tools return an "id" field - COPY IT EXACTLY WITHOUT ANY CHANGES
-  - **DO NOT add "::class::" or "::kind::" or "::method::" prefixes** - these are not part of node IDs
-  - **DO NOT convert dots to slashes** - copy the path exactly as Scout returned it
-  - Use `null` if Scout didn't return an id for this element
+- `action.action_file_path`: **File path where the symbol is defined**
+  - Example: `"api/routes.py"` or `"core/auth.py"`
+  - Use forward slashes (`/`), not backslashes
+  - Backend will automatically normalize Windows paths
+- `action.action_symbol`: **The symbol name (class, function, or method)**
+  - Example: `"RequestHandler"` or `"authenticate"`
+  - IMPORTANT: Do NOT include the file path here - just the symbol name
+  - Backend will combine file_path + symbol into the complete node_id automatically
+  - Use `null` if this is not a drillable target
 - `action.parameters`: Use {} (empty dict) unless you have virtual node grouping context
 - `sequence_order`: Only set if the nodes form a sequential workflow (0-indexed), otherwise omit
 
@@ -903,7 +907,8 @@ When ready, respond with a `next_layer` object in ComponentDrilldownResponse for
       "description": "1-2 sentences explaining what this element does and its role",
       "action": {{
         "kind": "inspect_source",
-        "target_id": "graph_node_id_if_available_or_null",
+        "action_file_path": "api/routes.py",
+        "action_symbol": "RequestHandler",
         "parameters": {{}}
       }}
     }}
@@ -920,7 +925,9 @@ When ready, respond with a `next_layer` object in ComponentDrilldownResponse for
 - **`action.kind` MUST be determined by node_type:**
   - Use `"component_drilldown"` for: **class** (allows further drilling into the inner class)
   - Use `"inspect_source"` for: function, source (show implementation or data definition)
-- `target_id`: Use COMPLETE node IDs from Scout's results in format `python::path/to/file.py::ClassName`, or `null` if not available
+- `action_file_path`: The file where the element is defined (e.g., `"api/routes.py"`)
+- `action_symbol`: The element name (method, attribute, or class name) (e.g., `"RequestHandler"`)
+  - Backend will combine these automatically into the complete node_id
 - `parameters`: Use {{}} (empty dict)
 - `sequence_order`: Omit unless elements form a sequential workflow
 
@@ -1086,7 +1093,8 @@ Example node structure with semantic metadata:
     "description": "Handles vision/OCR-based extraction for complex layouts",
     "action": {
       "kind": "component_drilldown",
-      "target_id": "python::deepdoc/parser/pdf_parser.py::VisionParser",
+      "action_file_path": "deepdoc/parser/pdf_parser.py",
+      "action_symbol": "VisionParser",
       "parameters": {}
     },
     "semantic_metadata": {
@@ -1120,25 +1128,21 @@ VIOLATION OF THIS RULE WILL CAUSE "UNKNOWN ACTION" ERRORS ON THE FRONTEND.
 - **No tool calls** - You have all the information you need from Scout's investigation
 - **Generate proper node_key** - Use kebab-case conversion of class names (VisionParser → vision-parser)
 - **Set action.kind correctly** - Classes use "component_drilldown", functions/methods use "inspect_source"
-- **⚠️ CRITICAL: Set target_id CORRECTLY** - COPY the "id" field from Scout's results WITHOUT modification
-  - **EXACT FORMAT:** `python::path/to/file.py::ClassName`
-  - Scout tools return nodes with an "id" field - COPY IT EXACTLY AS-IS
-  - **DO NOT EVER add "::kind::" or "::class::" or "::method::" prefixes** - these are NOT part of the node ID
-  - **DO NOT add the node's "kind" field to the target_id** - the kind (class, method, function) is separate metadata
-  - **DO NOT convert dots to anything else** - the path uses `/` for folders (deepdoc/parser, NOT deepdoc.parser)
-  - **DO NOT truncate class names** - use complete names from Scout (RAGFlowDocxParser, NOT DocxParser)
-  - **DO NOT fabricate IDs** - if Scout didn't return it, use `null`
+- **⚠️ IMPROVED: Use action_file_path + action_symbol (SIMPLER & MORE RELIABLE)**
+  - **action_file_path**: The file path from Scout results (e.g., `"deepdoc/parser/pdf_parser.py"`)
+  - **action_symbol**: The class/method name from Scout results (e.g., `"RAGFlowPdfParser"`)
+  - **DO NOT construct target_id yourself** - the backend will combine these two fields automatically
+  - Backend will convert: `action_file_path="deepdoc/parser/pdf_parser.py"` + `action_symbol="RAGFlowPdfParser"` → `target_id="python::deepdoc/parser/pdf_parser.py::RAGFlowPdfParser"`
 
-  **CORRECT EXAMPLES (from actual Scout results):**
-  - `python::deepdoc/parser/pdf_parser.py::RAGFlowPdfParser` ✓ Copy "id" field as-is
-  - `python::ragflow/orchestrator/workflow.py::WorkflowExecutor` ✓ Copy from Scout's results
-  - `null` ✓ When element not found in Scout results
+  **CORRECT EXAMPLES (what LLM should output):**
+  - `action_file_path: "deepdoc/parser/pdf_parser.py"`, `action_symbol: "RAGFlowPdfParser"` ✓ Backend combines automatically
+  - `action_file_path: "ragflow/orchestrator/workflow.py"`, `action_symbol: "WorkflowExecutor"` ✓ Simple, clear
+  - `action_file_path: null`, `action_symbol: null` ✓ When element not found in Scout results
 
-  **WRONG EXAMPLES (DO NOT USE):**
-  - `python::class::deepdoc.parser.pdf_parser.RAGFlowPdfParser` ✗ Has "::class::" prefix
-  - `python::deepdoc.parser.pdf_parser::RAGFlowPdfParser` ✗ Has dots instead of slashes
-  - `python::method::path::to::MyClass::my_method` ✗ Has "::method::" prefix
-  - `deepdoc.parser.pdf_parser.RAGFlowPdfParser` ✗ Missing "python::" prefix and has dots
+  **OLD WAY (no longer needed):**
+  - ~~`target_id: "python::deepdoc/parser/pdf_parser.py::RAGFlowPdfParser"`~~ ✗ Complex format, error-prone
+  - ~~`target_id: "python::class::deepdoc/parser/pdf_parser.py::RAGFlowPdfParser"`~~ ✗ Extra prefix causes errors
+  - ~~`target_id: "python::deepdoc.parser.pdf_parser::RAGFlowPdfParser"`~~ ✗ Dots instead of slashes causes errors
 
 When you have analyzed the inheritance graph and identified all architectural elements, generate the structured JSON response with the complete list of nodes."""
 
@@ -1294,7 +1298,8 @@ When ready, respond with ComponentDrilldownResponse JSON containing:
     "description": "Routes tasks to appropriate handlers based on type and priority",
     "action": {
       "kind": "component_drilldown",
-      "target_id": "python::agent/executor/router.py::TaskRouter",
+      "action_file_path": "agent/executor/router.py",
+      "action_symbol": "TaskRouter",
       "parameters": {}
     },
     "sequence_order": 1
@@ -1321,18 +1326,19 @@ VIOLATION OF THIS RULE WILL CAUSE "UNKNOWN ACTION" ERRORS ON THE FRONTEND.
 - **Generate proper node_key** - Use kebab-case conversion of function/class names
 - **Set action.kind correctly** - Classes/workflows use "component_drilldown", functions use "inspect_source"
 - **Set sequence_order** - If nodes form a workflow sequence, order them 0, 1, 2, etc.
-- **⚠️ CRITICAL: Set target_id CORRECTLY** - COPY the "id" field from Scout's results WITHOUT modification
-  - **EXACT FORMAT:** `python::path/to/file.py::ClassName` or `python::path/to/file.py::function_name`
-  - Scout tools return nodes with an "id" field - COPY IT EXACTLY AS-IS
-  - **DO NOT EVER add "::kind::" or "::class::" or "::method::" or "::function::" prefixes** - these are NOT part of the node ID
-  - **DO NOT add the node's "kind" field to the target_id** - the kind is separate metadata
-  - **DO NOT convert dots to slashes** - copy the path as-is from Scout results
-  - **DO NOT fabricate IDs** - if Scout didn't return it, use `null`
+- **⚠️ IMPROVED: Use action_file_path + action_symbol (SIMPLER & MORE RELIABLE)**
+  - **action_file_path**: The file path from Scout results (e.g., `"agent/executor/router.py"`)
+  - **action_symbol**: The class/function name from Scout results (e.g., `"TaskRouter"`)
+  - **DO NOT construct target_id yourself** - the backend will combine these two fields automatically
+  - Backend will convert: `action_file_path="agent/executor/router.py"` + `action_symbol="TaskRouter"` → `target_id="python::agent/executor/router.py::TaskRouter"`
 
-  **CORRECT EXAMPLES:**
-  - `python::agent/executor/router.py::TaskRouter` ✓ Copy "id" as-is
-  - `python::utils/helpers.py::process_data` ✓ Function-level node ID
-  - `null` ✓ When element not found in Scout results
+  **CORRECT EXAMPLES (what LLM should output):**
+  - `action_file_path: "agent/executor/router.py"`, `action_symbol: "TaskRouter"` ✓ Backend combines automatically
+  - `action_file_path: "utils/helpers.py"`, `action_symbol: "process_data"` ✓ Simple, clear
+  - Use `null` for target_id fields if element not found in Scout results ✓ When not applicable
+
+  **OLD WAY (no longer needed):**
+  - ~~`target_id: "python::agent/executor/router.py::TaskRouter"`~~ ✗ Complex format, error-prone
 
 When you have analyzed the execution paths and identified all workflow components, generate the structured JSON response with the complete list of orchestration elements and handlers."""
 
@@ -1485,7 +1491,8 @@ When ready, respond with ComponentDrilldownResponse JSON containing:
     "description": "Handles user login, logout, and session management",
     "action": {
       "kind": "component_drilldown",
-      "target_id": "python::api/routes/auth.py::AuthHandler",
+      "action_file_path": "api/routes/auth.py",
+      "action_symbol": "AuthHandler",
       "parameters": {}
     }
   }
@@ -1510,17 +1517,19 @@ VIOLATION OF THIS RULE WILL CAUSE "UNKNOWN ACTION" ERRORS ON THE FRONTEND.
 - **No tool calls** - You have all the information you need from Scout's investigation
 - **Generate proper node_key** - Use kebab-case conversion of endpoint/handler names
 - **Set action.kind correctly** - Service/category types use "component_drilldown", functions use "inspect_source"
-- **⚠️ CRITICAL: Set target_id CORRECTLY** - COPY the "id" field from Scout's results WITHOUT modification
-  - **EXACT FORMAT:** `python::path/to/file.py::HandlerClassName`
-  - Scout tools return nodes with an "id" field - COPY IT EXACTLY AS-IS
-  - **DO NOT EVER add "::kind::" or "::class::" or "::method::" prefixes** - these are NOT part of the node ID
-  - **DO NOT abbreviate class names** - use complete names from Scout (AuthenticationHandler, not AuthHandler)
-  - **DO NOT fabricate IDs** - if Scout didn't return it, use `null`
+- **⚠️ IMPROVED: Use action_file_path + action_symbol (SIMPLER & MORE RELIABLE)**
+  - **action_file_path**: The file path from Scout results (e.g., `"api/routes/auth.py"`)
+  - **action_symbol**: The class/handler name from Scout results (e.g., `"AuthHandler"`)
+  - **DO NOT construct target_id yourself** - the backend will combine these two fields automatically
+  - Backend will convert: `action_file_path="api/routes/auth.py"` + `action_symbol="AuthHandler"` → `target_id="python::api/routes/auth.py::AuthHandler"`
 
-  **CORRECT EXAMPLES:**
-  - `python::api/routes/auth.py::AuthHandler` ✓ Copy "id" as-is
-  - `python::api/handlers/document.py::DocumentProcessor` ✓ Complete class name
-  - `null` ✓ When element not found in Scout results
+  **CORRECT EXAMPLES (what LLM should output):**
+  - `action_file_path: "api/routes/auth.py"`, `action_symbol: "AuthHandler"` ✓ Backend combines automatically
+  - `action_file_path: "api/handlers/document.py"`, `action_symbol: "DocumentProcessor"` ✓ Simple, clear
+  - Use `null` for target_id fields if element not found in Scout results ✓ When not applicable
+
+  **OLD WAY (no longer needed):**
+  - ~~`target_id: "python::api/routes/auth.py::AuthHandler"`~~ ✗ Complex format, error-prone
 
 When you have analyzed the entry points and categorized the API operations, generate the structured JSON response with all significant endpoints or functional domains."""
 
