@@ -21,8 +21,10 @@ from component_agent.schemas import (
     coerce_subagent_payload,
 )
 from orchestration_agent.graph import run_orchestration_agent
+from drilldown_response_cache import DrilldownResponseCache
 import uuid
 from workspace import WorkspaceManager
+from pathlib import Path
 
 from ..schemas import (
     ComponentDTO,
@@ -370,6 +372,23 @@ async def get_overview(workspace_id: str):
 # === Drilldown ===
 
 
+def _breadcrumbs_to_navigation_breadcrumbs(breadcrumbs: List[Dict]) -> List[NavigationBreadcrumb]:
+    """Convert breadcrumb dicts from API request to NavigationBreadcrumb objects.
+
+    Used for cache key generation.
+    """
+    return [
+        NavigationBreadcrumb(
+            node_key=b.get("node_key", ""),
+            title=b.get("title", b.get("label", "")),
+            node_type=b.get("node_type", ""),
+            target_id=b.get("target_id"),
+            metadata=b.get("metadata", {}),
+        )
+        for b in breadcrumbs
+    ]
+
+
 def _build_drilldown_request(
     workspace_id: str, database_url: str, component_card: Dict, breadcrumbs: List[Dict], cache_id: Optional[str] = None, clicked_node: Optional[Dict] = None
 ) -> Tuple[ComponentDrilldownRequest, str]:
@@ -653,6 +672,38 @@ async def _stream_drilldown(
     """Generate SSE events for drilldown progress."""
     workspace = _get_workspace(workspace_id)
 
+    # Handle clicked_node by adding to breadcrumbs before cache lookup
+    cache_breadcrumbs = breadcrumbs
+    if clicked_node:
+        cache_breadcrumbs = breadcrumbs + [{
+            "node_key": clicked_node.get("node_key", ""),
+            "title": clicked_node.get("title", ""),
+            "node_type": clicked_node.get("node_type", ""),
+            "target_id": clicked_node.get("target_id"),
+            "metadata": {"action_parameters": clicked_node.get("action_parameters")} if clicked_node.get("action_parameters") else {}
+        }]
+
+    # Check cache first
+    component_id = component_card.get("component_id", "")
+    breadcrumb_objects = _breadcrumbs_to_navigation_breadcrumbs(cache_breadcrumbs)
+
+    cached_response = DrilldownResponseCache.get(
+        Path(workspace.results_dir),
+        component_id,
+        breadcrumb_objects,
+        check_ttl=True,
+    )
+
+    if cached_response:
+        yield _sse_event("thinking", "Found cached result...")
+        await asyncio.sleep(0)
+        yield _sse_event(
+            "done",
+            "Loaded from cache",
+            cached_response,
+        )
+        return
+
     yield _sse_event("thinking", "Analyzing component structure...")
     await asyncio.sleep(0)
 
@@ -681,10 +732,21 @@ async def _stream_drilldown(
         yield _sse_event("error", "No response from agent")
         return
 
+    # Format response for output
+    formatted_response = _format_drilldown_response(response, workspace_id, cache_id, workspace.database_url)
+
+    # Save to cache
+    DrilldownResponseCache.save(
+        Path(workspace.results_dir),
+        component_id,
+        breadcrumb_objects,
+        formatted_response,
+    )
+
     yield _sse_event(
         "done",
         f"Found {len(response.next_layer.nodes)} nodes",
-        _format_drilldown_response(response, workspace_id, cache_id, workspace.database_url),
+        formatted_response,
     )
 
 
@@ -709,6 +771,41 @@ async def drilldown(workspace_id: str, request: DrilldownRequest):
     if not request.component_card:
         raise HTTPException(status_code=400, detail="component_card required")
 
+    # Handle clicked_node by adding to breadcrumbs before cache lookup
+    cache_breadcrumbs = request.breadcrumbs
+    if request.clicked_node:
+        cache_breadcrumbs = request.breadcrumbs + [{
+            "node_key": request.clicked_node.get("node_key", ""),
+            "title": request.clicked_node.get("title", ""),
+            "node_type": request.clicked_node.get("node_type", ""),
+            "target_id": request.clicked_node.get("target_id"),
+            "metadata": {"action_parameters": request.clicked_node.get("action_parameters")} if request.clicked_node.get("action_parameters") else {}
+        }]
+
+    # Check cache first
+    component_id = request.component_card.get("component_id", "")
+    breadcrumb_objects = _breadcrumbs_to_navigation_breadcrumbs(cache_breadcrumbs)
+
+    cached_response = DrilldownResponseCache.get(
+        Path(workspace.results_dir),
+        component_id,
+        breadcrumb_objects,
+        check_ttl=True,
+    )
+
+    if cached_response:
+        # Return cached response
+        return DrilldownResponse(
+            component_id=cached_response["component_id"],
+            agent_goal=cached_response["agent_goal"],
+            focus_label=cached_response["focus_label"],
+            rationale=cached_response["rationale"],
+            is_sequential=cached_response["is_sequential"],
+            nodes=[NavigationNodeDTO(**n) for n in cached_response["nodes"]],
+            cache_id=cached_response["cache_id"],
+            token_metrics=TokenMetrics(**cached_response["token_metrics"]) if cached_response.get("token_metrics") else None,
+        )
+
     try:
         drilldown_request, cache_id = _build_drilldown_request(
             workspace_id, workspace.database_url, request.component_card, request.breadcrumbs, request.cache_id, request.clicked_node
@@ -724,7 +821,16 @@ async def drilldown(workspace_id: str, request: DrilldownRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Drilldown failed: {e}")
 
+    # Format response and save to cache
     data = _format_drilldown_response(response, workspace_id, cache_id, workspace.database_url)
+
+    DrilldownResponseCache.save(
+        Path(workspace.results_dir),
+        component_id,
+        breadcrumb_objects,
+        data,
+    )
+
     return DrilldownResponse(
         component_id=data["component_id"],
         agent_goal=data["agent_goal"],

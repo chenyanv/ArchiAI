@@ -22,6 +22,7 @@ import "@xyflow/react/dist/style.css"
 import { motion } from "framer-motion"
 import { FileCode, FolderOpen, Box, Workflow, Database, Globe, Cpu, ChevronRight, Loader2, Search, Code2, Info, ArrowRight } from "lucide-react"
 import { type NavigationNode, type NodeRelationship, type DrilldownResponse, type Component } from "@/lib/api"
+import dagre from "dagre"
 
 // === Constants ===
 
@@ -100,87 +101,65 @@ function buildGraph(
   const hasRelationships = relationships && relationships.length > 0
 
   if (hasRelationships) {
-    // Relationship graph layout - compute positions using simple hierarchical layout
-    const nodeHeights = new Map<string, number>(nodes.map(n => [n.node_key, estimateNodeHeight(n.description)]))
+    // Relationship graph layout - compute positions using Dagre automatic layout
+    const dagreGraph = new dagre.graphlib.Graph({ compound: false })
 
-    // Build adjacency for layout algorithm
-    const inDegree = new Map<string, number>()
-    const outDegree = new Map<string, number>()
-    nodes.forEach(n => {
-      inDegree.set(n.node_key, 0)
-      outDegree.set(n.node_key, 0)
+    // Configure graph layout algorithm
+    dagreGraph.setGraph({
+      rankdir: "LR", // Left to right direction
+      nodesep: 120, // Horizontal separation between nodes
+      ranksep: 300, // Vertical separation between ranks (levels)
+      marginx: 40,
+      marginy: 40,
     })
 
-    relationships.forEach(rel => {
-      outDegree.set(rel.from_node_key, (outDegree.get(rel.from_node_key) || 0) + 1)
-      inDegree.set(rel.to_node_key, (inDegree.get(rel.to_node_key) || 0) + 1)
-    })
+    dagreGraph.setDefaultEdgeLabel(() => ({}))
 
-    // Simple hierarchical layout: root nodes on left, progressively to right
-    const levels = new Map<string, number>()
-    const visited = new Set<string>()
-
-    function assignLevel(nodeKey: string, level: number) {
-      if (visited.has(nodeKey)) return
-      visited.add(nodeKey)
-      levels.set(nodeKey, Math.max(levels.get(nodeKey) || 0, level))
-
-      relationships?.forEach(rel => {
-        if (rel.from_node_key === nodeKey) {
-          assignLevel(rel.to_node_key, level + 1)
-        }
+    // Add nodes to Dagre graph with calculated dimensions
+    nodes.forEach(node => {
+      const height = estimateNodeHeight(node.description)
+      dagreGraph.setNode(node.node_key, {
+        width: LAYOUT.nodeW,
+        height: height,
       })
-    }
-
-    // Start from nodes with no incoming edges
-    nodes.forEach(n => {
-      if (!inDegree.has(n.node_key) || inDegree.get(n.node_key) === 0) {
-        assignLevel(n.node_key, 0)
-      }
     })
 
-    // For remaining unassigned nodes, assign them
-    nodes.forEach(n => {
-      if (!levels.has(n.node_key)) {
-        assignLevel(n.node_key, 0)
-      }
+    // Add edges to Dagre graph
+    relationships.forEach((rel) => {
+      dagreGraph.setEdge(rel.from_node_key, rel.to_node_key)
     })
 
-    // Group nodes by level
-    const levelGroups = new Map<number, NavigationNode[]>()
-    nodes.forEach(n => {
-      const level = levels.get(n.node_key) || 0
-      if (!levelGroups.has(level)) levelGroups.set(level, [])
-      levelGroups.get(level)!.push(n)
-    })
+    // Run Dagre layout algorithm
+    dagre.layout(dagreGraph)
 
-    // Position nodes
-    levelGroups.forEach((nodesAtLevel, level) => {
-      const x = level * 500 + 40
-      let y = 40
+    // Extract positions from Dagre and create React Flow nodes
+    dagreGraph.nodes().forEach((nodeId) => {
+      const node = nodes.find(n => n.node_key === nodeId)
+      if (!node) return
 
-      nodesAtLevel.forEach((node) => {
-        const height = nodeHeights.get(node.node_key) || 80
-        const style = getNodeStyle(node.node_type)
+      const dagreNode = dagreGraph.node(nodeId)
+      const style = getNodeStyle(node.node_type)
 
-        graphNodes.push({
-          id: node.node_key,
-          type: "drilldown",
-          position: { x, y },
-          data: {
-            node,
-            onClick: () => onClick(node),
-            onSemanticClick: (e) => onSemanticClick(node, e),
-            isLoading: loadingId === node.node_key,
-            index: nodes.indexOf(node),
-            style,
-            isSequential: false,
-            isLast: false,
-          },
-        } as GraphNode)
+      // Dagre returns center coordinates, adjust for top-left origin
+      // React Flow uses top-left origin, so subtract half width/height
+      const x = dagreNode.x - dagreNode.width / 2
+      const y = dagreNode.y - dagreNode.height / 2
 
-        y += height + LAYOUT.gapY
-      })
+      graphNodes.push({
+        id: node.node_key,
+        type: "drilldown",
+        position: { x, y },
+        data: {
+          node,
+          onClick: () => onClick(node),
+          onSemanticClick: (e) => onSemanticClick(node, e),
+          isLoading: loadingId === node.node_key,
+          index: nodes.indexOf(node),
+          style,
+          isSequential: false,
+          isLast: false,
+        },
+      } as GraphNode)
     })
 
     // Add relationship edges with type-based styling
