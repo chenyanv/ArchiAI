@@ -49,16 +49,17 @@ const NODE_TYPE_STYLES: Record<string, { color: string; bg: string; Icon: typeof
   default: { color: "#71717a", bg: "#f4f4f5", Icon: Box },
 }
 
-const LAYOUT = { nodeW: 420, baseH: 80, gapX: 40, gapY: 50, seqGapY: 60 }
+const LAYOUT = { nodeW: 500, baseH: 90, gapX: 40, gapY: 50, seqGapY: 60 }
 
 // Estimate node height based on description length
 function estimateNodeHeight(description: string): number {
-  // Node width is 420, minus padding (40px) and icon area (50px) = ~330px for text
-  // At ~7px per char for 14px font, that's ~47 chars per line
-  const charsPerLine = 45
+  // Node width is 500, minus padding (40px) and icon area (50px) = ~410px for text
+  // At ~7px per char for 14px font, that's ~58 chars per line
+  const charsPerLine = 54
   const lines = Math.ceil(description.length / charsPerLine)
-  const lineHeight = 22 // text-sm with leading-relaxed
-  return LAYOUT.baseH + Math.max(0, lines - 1) * lineHeight
+  const lineHeight = 20 // text-sm with leading-relaxed
+  // Add buffer space for better breathing room
+  return LAYOUT.baseH + Math.max(0, lines - 1) * lineHeight + 12
 }
 
 // === Types ===
@@ -107,10 +108,10 @@ function buildGraph(
     // Configure graph layout algorithm
     dagreGraph.setGraph({
       rankdir: "LR", // Left to right direction
-      nodesep: 120, // Horizontal separation between nodes
-      ranksep: 300, // Vertical separation between ranks (levels)
-      marginx: 40,
-      marginy: 40,
+      nodesep: 180, // Horizontal separation between nodes (increased for no overlap)
+      ranksep: 450, // Vertical separation between ranks (increased for taller nodes)
+      marginx: 60,
+      marginy: 60,
     })
 
     dagreGraph.setDefaultEdgeLabel(() => ({}))
@@ -182,7 +183,7 @@ function buildGraph(
     })
   } else if (isSequential) {
     // Vertical sequential layout with dynamic heights
-    let y = 40
+    let y = 60
     nodes.forEach((node, i) => {
       const style = getNodeStyle(node.node_type)
       const nodeHeight = estimateNodeHeight(node.description)
@@ -190,7 +191,7 @@ function buildGraph(
       graphNodes.push({
         id: node.node_key,
         type: "drilldown",
-        position: { x: 40, y },
+        position: { x: 60, y },
         data: {
           node,
           onClick: () => onClick(node),
@@ -216,11 +217,12 @@ function buildGraph(
         })
       }
 
-      y += nodeHeight + LAYOUT.seqGapY
+      // Increased spacing to accommodate larger nodes
+      y += nodeHeight + 90
     })
   } else {
     // Grid layout - single column with dynamic heights
-    let y = 40
+    let y = 60
     nodes.forEach((node, i) => {
       const style = getNodeStyle(node.node_type)
       const nodeHeight = estimateNodeHeight(node.description)
@@ -228,7 +230,7 @@ function buildGraph(
       graphNodes.push({
         id: node.node_key,
         type: "drilldown",
-        position: { x: 40, y },
+        position: { x: 60, y },
         data: {
           node,
           onClick: () => onClick(node),
@@ -241,7 +243,8 @@ function buildGraph(
         },
       } as GraphNode)
 
-      y += nodeHeight + LAYOUT.gapY
+      // Increased spacing to accommodate larger nodes
+      y += nodeHeight + 70
     })
   }
 
